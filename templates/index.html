@@ -429,7 +429,7 @@
             formData.append('period_date', document.getElementById('period1Date').value);
 
             try {
-                const response = await fetch('/api/upload/fixed', {
+                const response = await fetch('/api/upload/fixed/single', {
                     method: 'POST',
                     body: formData
                 });
@@ -466,7 +466,7 @@
             formData.append('period_date', document.getElementById('period2Date').value);
 
             try {
-                const response = await fetch('/api/upload/fixed', {
+                const response = await fetch('/api/upload/fixed/single', {
                     method: 'POST',
                     body: formData
                 });

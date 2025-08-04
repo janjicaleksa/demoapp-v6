@@ -251,38 +251,67 @@ async def upload_fixed_files(
     try:
         all_results = []
         
+        # Read and store file content for all files to avoid consumption issues
+        file_contents = {}
+        
+        # Store Period 1 file contents
+        if kupci_prethodna_fiskalna_godina:
+            file_contents['kupci_prethodna_fiskalna_godina'] = await kupci_prethodna_fiskalna_godina.read()
+        if dobavljaci_prethodna_fiskalna_godina:
+            file_contents['dobavljaci_prethodna_fiskalna_godina'] = await dobavljaci_prethodna_fiskalna_godina.read()
+        if kupci_prethodna_fiskalna_godina_iv:
+            file_contents['kupci_prethodna_fiskalna_godina_iv'] = await kupci_prethodna_fiskalna_godina_iv.read()
+        
+        # Store Period 2 file contents
+        if kupci_bilans_preseka:
+            file_contents['kupci_bilans_preseka'] = await kupci_bilans_preseka.read()
+        if dobavljaci_bilans_preseka:
+            file_contents['dobavljaci_bilans_preseka'] = await dobavljaci_bilans_preseka.read()
+        if kupci_bilans_preseka_iv:
+            file_contents['kupci_bilans_preseka_iv'] = await kupci_bilans_preseka_iv.read()
+        
         # Process Period 1 if files are provided
-        period1_files = [kupci_prethodna_fiskalna_godina, dobavljaci_prethodna_fiskalna_godina]
-        if any(period1_files) and period1_date:
-            if not all(period1_files):
+        period1_required_files = [kupci_prethodna_fiskalna_godina, dobavljaci_prethodna_fiskalna_godina]
+        period1_has_files = any(file is not None for file in period1_required_files)
+        
+        logger.info(f"Period 1 - has_files: {period1_has_files}, date: {period1_date}")
+        logger.info(f"Period 1 files - kupci: {kupci_prethodna_fiskalna_godina is not None}, dobavljaci: {dobavljaci_prethodna_fiskalna_godina is not None}")
+        
+        if period1_has_files and period1_date:
+            if not all(period1_required_files):
                 raise HTTPException(status_code=400, detail="All required files for Period 1 must be provided")
             
             period1_file_mappings = {
-                "kupci-prethodna-fiskalna-godina": kupci_prethodna_fiskalna_godina,
-                "dobavljaci-prethodna-fiskalna-godina": dobavljaci_prethodna_fiskalna_godina,
-                "kupci-prethodna-fiskalna-godina-iv": kupci_prethodna_fiskalna_godina_iv
+                "kupci-prethodna-fiskalna-godina": (kupci_prethodna_fiskalna_godina, file_contents.get('kupci_prethodna_fiskalna_godina')),
+                "dobavljaci-prethodna-fiskalna-godina": (dobavljaci_prethodna_fiskalna_godina, file_contents.get('dobavljaci_prethodna_fiskalna_godina')),
+                "kupci-prethodna-fiskalna-godina-iv": (kupci_prethodna_fiskalna_godina_iv, file_contents.get('kupci_prethodna_fiskalna_godina_iv'))
             }
             
             # Create period 1 structure
             period1_structure = create_period_structure(client_slug, period1_date)
-            period1_results = await process_files(period1_file_mappings, period1_structure, "Period 1")
+            period1_results = await process_files_with_content(period1_file_mappings, period1_structure, "Period 1")
             all_results.extend(period1_results)
         
         # Process Period 2 if files are provided
-        period2_files = [kupci_bilans_preseka, dobavljaci_bilans_preseka]
-        if any(period2_files) and period2_date:
-            if not all(period2_files):
+        period2_required_files = [kupci_bilans_preseka, dobavljaci_bilans_preseka]
+        period2_has_files = any(file is not None for file in period2_required_files)
+        
+        logger.info(f"Period 2 - has_files: {period2_has_files}, date: {period2_date}")
+        logger.info(f"Period 2 files - kupci: {kupci_bilans_preseka is not None}, dobavljaci: {dobavljaci_bilans_preseka is not None}")
+        
+        if period2_has_files and period2_date:
+            if not all(period2_required_files):
                 raise HTTPException(status_code=400, detail="All required files for Period 2 must be provided")
             
             period2_file_mappings = {
-                "kupci-bilans-preseka": kupci_bilans_preseka,
-                "dobavljaci-bilans-preseka": dobavljaci_bilans_preseka,
-                "kupci-bilans-preseka-iv": kupci_bilans_preseka_iv
+                "kupci-bilans-preseka": (kupci_bilans_preseka, file_contents.get('kupci_bilans_preseka')),
+                "dobavljaci-bilans-preseka": (dobavljaci_bilans_preseka, file_contents.get('dobavljaci_bilans_preseka')),
+                "kupci-bilans-preseka-iv": (kupci_bilans_preseka_iv, file_contents.get('kupci_bilans_preseka_iv'))
             }
             
             # Create period 2 structure
             period2_structure = create_period_structure(client_slug, period2_date)
-            period2_results = await process_files(period2_file_mappings, period2_structure, "Period 2")
+            period2_results = await process_files_with_content(period2_file_mappings, period2_structure, "Period 2")
             all_results.extend(period2_results)
         
         if not all_results:
@@ -299,11 +328,94 @@ async def upload_fixed_files(
         logger.error(f"Error processing files: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/upload/fixed/single")
+async def upload_fixed_files_single_period(
+    client_slug: str = Form(...),
+    period_date: str = Form(...),
+    # Period fields
+    kupci_prethodna_fiskalna_godina: Optional[UploadFile] = File(None),
+    dobavljaci_prethodna_fiskalna_godina: Optional[UploadFile] = File(None),
+    kupci_prethodna_fiskalna_godina_iv: Optional[UploadFile] = File(None),
+    kupci_bilans_preseka: Optional[UploadFile] = File(None),
+    dobavljaci_bilans_preseka: Optional[UploadFile] = File(None),
+    kupci_bilans_preseka_iv: Optional[UploadFile] = File(None)
+):
+    """Upload fixed files for a single period (for individual period forms)"""
+    try:
+        # Read and store file content for all files
+        file_contents = {}
+        
+        # Store file contents
+        if kupci_prethodna_fiskalna_godina:
+            file_contents['kupci_prethodna_fiskalna_godina'] = await kupci_prethodna_fiskalna_godina.read()
+        if dobavljaci_prethodna_fiskalna_godina:
+            file_contents['dobavljaci_prethodna_fiskalna_godina'] = await dobavljaci_prethodna_fiskalna_godina.read()
+        if kupci_prethodna_fiskalna_godina_iv:
+            file_contents['kupci_prethodna_fiskalna_godina_iv'] = await kupci_prethodna_fiskalna_godina_iv.read()
+        if kupci_bilans_preseka:
+            file_contents['kupci_bilans_preseka'] = await kupci_bilans_preseka.read()
+        if dobavljaci_bilans_preseka:
+            file_contents['dobavljaci_bilans_preseka'] = await dobavljaci_bilans_preseka.read()
+        if kupci_bilans_preseka_iv:
+            file_contents['kupci_bilans_preseka_iv'] = await kupci_bilans_preseka_iv.read()
+        
+        # Determine which period type based on the files provided
+        period1_required_files = [kupci_prethodna_fiskalna_godina, dobavljaci_prethodna_fiskalna_godina]
+        period2_required_files = [kupci_bilans_preseka, dobavljaci_bilans_preseka]
+        
+        period1_has_files = any(file is not None for file in period1_required_files)
+        period2_has_files = any(file is not None for file in period2_required_files)
+        
+        if period1_has_files and period2_has_files:
+            raise HTTPException(status_code=400, detail="Cannot mix Period 1 and Period 2 files in single upload")
+        
+        if not period1_has_files and not period2_has_files:
+            raise HTTPException(status_code=400, detail="No valid files provided")
+        
+        # Process based on which period type
+        if period1_has_files:
+            if not all(period1_required_files):
+                raise HTTPException(status_code=400, detail="All required files for Period 1 must be provided")
+            
+            file_mappings = {
+                "kupci-prethodna-fiskalna-godina": (kupci_prethodna_fiskalna_godina, file_contents.get('kupci_prethodna_fiskalna_godina')),
+                "dobavljaci-prethodna-fiskalna-godina": (dobavljaci_prethodna_fiskalna_godina, file_contents.get('dobavljaci_prethodna_fiskalna_godina')),
+                "kupci-prethodna-fiskalna-godina-iv": (kupci_prethodna_fiskalna_godina_iv, file_contents.get('kupci_prethodna_fiskalna_godina_iv'))
+            }
+            period_name = "Period 1"
+        else:
+            if not all(period2_required_files):
+                raise HTTPException(status_code=400, detail="All required files for Period 2 must be provided")
+            
+            file_mappings = {
+                "kupci-bilans-preseka": (kupci_bilans_preseka, file_contents.get('kupci_bilans_preseka')),
+                "dobavljaci-bilans-preseka": (dobavljaci_bilans_preseka, file_contents.get('dobavljaci_bilans_preseka')),
+                "kupci-bilans-preseka-iv": (kupci_bilans_preseka_iv, file_contents.get('kupci_bilans_preseka_iv'))
+            }
+            period_name = "Period 2"
+        
+        # Create period structure
+        period_structure = create_period_structure(client_slug, period_date)
+        results = await process_files_with_content(file_mappings, period_structure, period_name)
+        
+        return {
+            "message": "Files processed successfully",
+            "period_date": period_date,
+            "results": results
+        }
+        
+    except Exception as e:
+        logger.error(f"Error processing files: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 async def process_files(file_mappings: dict, period_structure: dict, period_name: str) -> List[dict]:
     """Process files for a specific period"""
     results = []
     
+    logger.info(f"Processing {period_name} with {len(file_mappings)} file mappings")
+    
     for file_type, file in file_mappings.items():
+        logger.info(f"Checking {period_name} - {file_type}: {file is not None}")
         if file:
             # Validate file type
             allowed_extensions = {'.xlsx', '.csv', '.doc', '.docx', '.pdf'}
@@ -315,10 +427,12 @@ async def process_files(file_mappings: dict, period_structure: dict, period_name
                     detail=f"File type {file_extension} not allowed for {file_type}"
                 )
             
+            # Read file content once and store it in memory
+            content = await file.read()
+            
             # Save raw file
             raw_file_path = Path(period_structure["raw_period_path"]) / f"{file_type}{file_extension}"
             async with aiofiles.open(raw_file_path, 'wb') as f:
-                content = await file.read()
                 await f.write(content)
             
             # Process file based on type
@@ -343,6 +457,59 @@ async def process_files(file_mappings: dict, period_structure: dict, period_name
                     "period": period_name,
                     "file_type": file_type,
                     "original_filename": file.filename,
+                    "raw_path": str(raw_file_path),
+                    "processed_path": str(processed_file_path),
+                    "records_processed": standardized_data.get("total_records", 0)
+                })
+    
+    return results
+
+async def process_files_with_content(file_mappings: dict, period_structure: dict, period_name: str) -> List[dict]:
+    """Process files for a specific period using pre-read content"""
+    results = []
+    
+    logger.info(f"Processing {period_name} with {len(file_mappings)} file mappings (using pre-read content)")
+    
+    for file_type, (file_obj, content) in file_mappings.items():
+        logger.info(f"Checking {period_name} - {file_type}: {file_obj is not None}")
+        if file_obj:
+            # Validate file type
+            allowed_extensions = {'.xlsx', '.csv', '.doc', '.docx', '.pdf'}
+            file_extension = Path(file_obj.filename).suffix.lower()
+            
+            if file_extension not in allowed_extensions:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"File type {file_extension} not allowed for {file_type}"
+                )
+            
+            # Save raw file
+            raw_file_path = Path(period_structure["raw_period_path"]) / f"{file_type}{file_extension}"
+            async with aiofiles.open(raw_file_path, 'wb') as f:
+                await f.write(content)
+            
+            # Process file based on type
+            tables = []
+            if file_extension == '.pdf':
+                tables = await extract_tables_from_pdf(str(raw_file_path))
+            elif file_extension in ['.xlsx']:
+                tables = extract_tables_from_excel(str(raw_file_path))
+            elif file_extension == '.csv':
+                tables = extract_tables_from_csv(str(raw_file_path))
+            
+            # Standardize data
+            if tables:
+                standardized_data = standardize_table_data(tables[0])  # Use first table
+                
+                # Save processed data
+                processed_file_path = Path(period_structure["processed_period_path"]) / f"{file_type}-processed.json"
+                async with aiofiles.open(processed_file_path, 'w', encoding='utf-8') as f:
+                    await f.write(json.dumps(standardized_data, indent=2, ensure_ascii=False))
+                
+                results.append({
+                    "period": period_name,
+                    "file_type": file_type,
+                    "original_filename": file_obj.filename,
                     "raw_path": str(raw_file_path),
                     "processed_path": str(processed_file_path),
                     "records_processed": standardized_data.get("total_records", 0)
