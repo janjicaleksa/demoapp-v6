@@ -237,22 +237,40 @@ async def create_client(client_name: str = Form(...)):
 async def upload_fixed_files(
     client_slug: str = Form(...),
     period_date: str = Form(...),
-    kupci_kraj_fiskalne_godine: Optional[UploadFile] = File(None),
+    # Period 1 fields
+    kupci_prethodna_fiskalna_godina: Optional[UploadFile] = File(None),
+    dobavljaci_prethodna_fiskalna_godina: Optional[UploadFile] = File(None),
+    kupci_prethodna_fiskalna_godina_iv: Optional[UploadFile] = File(None),
+    # Period 2 fields
     kupci_bilans_preseka: Optional[UploadFile] = File(None),
-    dobavljaci_kraj_fiskalne_godine: Optional[UploadFile] = File(None),
     dobavljaci_bilans_preseka: Optional[UploadFile] = File(None),
-    kupci_kraj_fiskalne_godine_iv: Optional[UploadFile] = File(None),
     kupci_bilans_preseka_iv: Optional[UploadFile] = File(None)
 ):
     """Upload fixed files for processing"""
     try:
-        # Validate required files
-        required_files = [
-            kupci_kraj_fiskalne_godine,
-            kupci_bilans_preseka,
-            dobavljaci_kraj_fiskalne_godine,
-            dobavljaci_bilans_preseka
-        ]
+        # Check if this is Period 1 or Period 2 based on which files are provided
+        period1_files = [kupci_prethodna_fiskalna_godina, dobavljaci_prethodna_fiskalna_godina]
+        period2_files = [kupci_bilans_preseka, dobavljaci_bilans_preseka]
+        
+        # Determine which period this is
+        if any(period1_files):
+            # This is Period 1
+            required_files = period1_files
+            file_mappings = {
+                "kupci-prethodna-fiskalna-godina": kupci_prethodna_fiskalna_godina,
+                "dobavljaci-prethodna-fiskalna-godina": dobavljaci_prethodna_fiskalna_godina,
+                "kupci-prethodna-fiskalna-godina-iv": kupci_prethodna_fiskalna_godina_iv
+            }
+        elif any(period2_files):
+            # This is Period 2
+            required_files = period2_files
+            file_mappings = {
+                "kupci-bilans-preseka": kupci_bilans_preseka,
+                "dobavljaci-bilans-preseka": dobavljaci_bilans_preseka,
+                "kupci-bilans-preseka-iv": kupci_bilans_preseka_iv
+            }
+        else:
+            raise HTTPException(status_code=400, detail="No valid files provided for either period")
         
         if not all(required_files):
             raise HTTPException(status_code=400, detail="All required files must be provided")
@@ -261,16 +279,6 @@ async def upload_fixed_files(
         period_structure = create_period_structure(client_slug, period_date)
         
         results = []
-        
-        # Process each file
-        file_mappings = {
-            "kupci-kraj-fiskalne-godine": kupci_kraj_fiskalne_godine,
-            "kupci-bilans-preseka": kupci_bilans_preseka,
-            "dobavljaci-kraj-fiskalne-godine": dobavljaci_kraj_fiskalne_godine,
-            "dobavljaci-bilans-preseka": dobavljaci_bilans_preseka,
-            "kupci-kraj-fiskalne-godine-iv": kupci_kraj_fiskalne_godine_iv,
-            "kupci-bilans-preseka-iv": kupci_bilans_preseka_iv
-        }
         
         for file_type, file in file_mappings.items():
             if file:
