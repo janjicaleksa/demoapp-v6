@@ -1,0 +1,8 @@
+# Azure Document Intelligence Configuration
+# Get these values from your Azure portal
+AZURE_ENDPOINT=https://your-resource-name.cognitiveservices.azure.com/
+AZURE_KEY=your-azure-key-here
+
+# Optional: Server Configuration
+# HOST=0.0.0.0
+# PORT=8000 
