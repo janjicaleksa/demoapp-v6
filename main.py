@@ -236,7 +236,8 @@ async def create_client(client_name: str = Form(...)):
 @app.post("/api/upload/fixed")
 async def upload_fixed_files(
     client_slug: str = Form(...),
-    period_date: str = Form(...),
+    period1_date: Optional[str] = Form(None),
+    period2_date: Optional[str] = Form(None),
     # Period 1 fields
     kupci_prethodna_fiskalna_godina: Optional[UploadFile] = File(None),
     dobavljaci_prethodna_fiskalna_godina: Optional[UploadFile] = File(None),
@@ -246,93 +247,108 @@ async def upload_fixed_files(
     dobavljaci_bilans_preseka: Optional[UploadFile] = File(None),
     kupci_bilans_preseka_iv: Optional[UploadFile] = File(None)
 ):
-    """Upload fixed files for processing"""
+    """Upload fixed files for processing - handles both periods simultaneously"""
     try:
-        # Check if this is Period 1 or Period 2 based on which files are provided
-        period1_files = [kupci_prethodna_fiskalna_godina, dobavljaci_prethodna_fiskalna_godina]
-        period2_files = [kupci_bilans_preseka, dobavljaci_bilans_preseka]
+        all_results = []
         
-        # Determine which period this is
-        if any(period1_files):
-            # This is Period 1
-            required_files = period1_files
-            file_mappings = {
+        # Process Period 1 if files are provided
+        period1_files = [kupci_prethodna_fiskalna_godina, dobavljaci_prethodna_fiskalna_godina]
+        if any(period1_files) and period1_date:
+            if not all(period1_files):
+                raise HTTPException(status_code=400, detail="All required files for Period 1 must be provided")
+            
+            period1_file_mappings = {
                 "kupci-prethodna-fiskalna-godina": kupci_prethodna_fiskalna_godina,
                 "dobavljaci-prethodna-fiskalna-godina": dobavljaci_prethodna_fiskalna_godina,
                 "kupci-prethodna-fiskalna-godina-iv": kupci_prethodna_fiskalna_godina_iv
             }
-        elif any(period2_files):
-            # This is Period 2
-            required_files = period2_files
-            file_mappings = {
+            
+            # Create period 1 structure
+            period1_structure = create_period_structure(client_slug, period1_date)
+            period1_results = await process_files(period1_file_mappings, period1_structure, "Period 1")
+            all_results.extend(period1_results)
+        
+        # Process Period 2 if files are provided
+        period2_files = [kupci_bilans_preseka, dobavljaci_bilans_preseka]
+        if any(period2_files) and period2_date:
+            if not all(period2_files):
+                raise HTTPException(status_code=400, detail="All required files for Period 2 must be provided")
+            
+            period2_file_mappings = {
                 "kupci-bilans-preseka": kupci_bilans_preseka,
                 "dobavljaci-bilans-preseka": dobavljaci_bilans_preseka,
                 "kupci-bilans-preseka-iv": kupci_bilans_preseka_iv
             }
-        else:
+            
+            # Create period 2 structure
+            period2_structure = create_period_structure(client_slug, period2_date)
+            period2_results = await process_files(period2_file_mappings, period2_structure, "Period 2")
+            all_results.extend(period2_results)
+        
+        if not all_results:
             raise HTTPException(status_code=400, detail="No valid files provided for either period")
-        
-        if not all(required_files):
-            raise HTTPException(status_code=400, detail="All required files must be provided")
-        
-        # Create period structure
-        period_structure = create_period_structure(client_slug, period_date)
-        
-        results = []
-        
-        for file_type, file in file_mappings.items():
-            if file:
-                # Validate file type
-                allowed_extensions = {'.xlsx', '.csv', '.doc', '.docx', '.pdf'}
-                file_extension = Path(file.filename).suffix.lower()
-                
-                if file_extension not in allowed_extensions:
-                    raise HTTPException(
-                        status_code=400, 
-                        detail=f"File type {file_extension} not allowed for {file_type}"
-                    )
-                
-                # Save raw file
-                raw_file_path = Path(period_structure["raw_period_path"]) / f"{file_type}{file_extension}"
-                async with aiofiles.open(raw_file_path, 'wb') as f:
-                    content = await file.read()
-                    await f.write(content)
-                
-                # Process file based on type
-                tables = []
-                if file_extension == '.pdf':
-                    tables = await extract_tables_from_pdf(str(raw_file_path))
-                elif file_extension in ['.xlsx']:
-                    tables = extract_tables_from_excel(str(raw_file_path))
-                elif file_extension == '.csv':
-                    tables = extract_tables_from_csv(str(raw_file_path))
-                
-                # Standardize data
-                if tables:
-                    standardized_data = standardize_table_data(tables[0])  # Use first table
-                    
-                    # Save processed data
-                    processed_file_path = Path(period_structure["processed_period_path"]) / f"{file_type}-processed.json"
-                    async with aiofiles.open(processed_file_path, 'w', encoding='utf-8') as f:
-                        await f.write(json.dumps(standardized_data, indent=2, ensure_ascii=False))
-                    
-                    results.append({
-                        "file_type": file_type,
-                        "original_filename": file.filename,
-                        "raw_path": str(raw_file_path),
-                        "processed_path": str(processed_file_path),
-                        "records_processed": standardized_data.get("total_records", 0)
-                    })
         
         return {
             "message": "Files processed successfully",
-            "period_date": period_date,
-            "results": results
+            "period1_date": period1_date,
+            "period2_date": period2_date,
+            "results": all_results
         }
         
     except Exception as e:
         logger.error(f"Error processing files: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+async def process_files(file_mappings: dict, period_structure: dict, period_name: str) -> List[dict]:
+    """Process files for a specific period"""
+    results = []
+    
+    for file_type, file in file_mappings.items():
+        if file:
+            # Validate file type
+            allowed_extensions = {'.xlsx', '.csv', '.doc', '.docx', '.pdf'}
+            file_extension = Path(file.filename).suffix.lower()
+            
+            if file_extension not in allowed_extensions:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"File type {file_extension} not allowed for {file_type}"
+                )
+            
+            # Save raw file
+            raw_file_path = Path(period_structure["raw_period_path"]) / f"{file_type}{file_extension}"
+            async with aiofiles.open(raw_file_path, 'wb') as f:
+                content = await file.read()
+                await f.write(content)
+            
+            # Process file based on type
+            tables = []
+            if file_extension == '.pdf':
+                tables = await extract_tables_from_pdf(str(raw_file_path))
+            elif file_extension in ['.xlsx']:
+                tables = extract_tables_from_excel(str(raw_file_path))
+            elif file_extension == '.csv':
+                tables = extract_tables_from_csv(str(raw_file_path))
+            
+            # Standardize data
+            if tables:
+                standardized_data = standardize_table_data(tables[0])  # Use first table
+                
+                # Save processed data
+                processed_file_path = Path(period_structure["processed_period_path"]) / f"{file_type}-processed.json"
+                async with aiofiles.open(processed_file_path, 'w', encoding='utf-8') as f:
+                    await f.write(json.dumps(standardized_data, indent=2, ensure_ascii=False))
+                
+                results.append({
+                    "period": period_name,
+                    "file_type": file_type,
+                    "original_filename": file.filename,
+                    "raw_path": str(raw_file_path),
+                    "processed_path": str(processed_file_path),
+                    "records_processed": standardized_data.get("total_records", 0)
+                })
+    
+    return results
 
 @app.post("/api/upload/unfixed")
 async def upload_unfixed_files(
