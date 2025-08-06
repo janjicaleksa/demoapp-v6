@@ -14,7 +14,10 @@ from typing import List, Optional
 import re
 from azure.ai.formrecognizer import DocumentAnalysisClient
 from azure.core.credentials import AzureKeyCredential
+from azure.storage.blob import BlobServiceClient, BlobClient, ContainerClient
 import logging
+import tempfile
+import io
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -41,9 +44,31 @@ templates = Jinja2Templates(directory="templates")
 AZURE_ENDPOINT = os.getenv("AZURE_ENDPOINT", "")
 AZURE_KEY = os.getenv("AZURE_KEY", "")
 
-# Create base directories
-BASE_DIR = Path("clients")
-BASE_DIR.mkdir(exist_ok=True)
+# Azure Blob Storage configuration
+AZURE_STORAGE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING", "")
+CONTAINER_NAME = "clients"
+
+# Initialize Azure Blob Storage client
+blob_service_client = None
+if AZURE_STORAGE_CONNECTION_STRING:
+    try:
+        blob_service_client = BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING)
+        # Ensure container exists
+        container_client = blob_service_client.get_container_client(CONTAINER_NAME)
+        if not container_client.exists():
+            container_client.create_container()
+        logger.info("Azure Blob Storage client initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize Azure Blob Storage client: {e}")
+        blob_service_client = None
+else:
+    logger.warning("AZURE_STORAGE_CONNECTION_STRING not configured, using local storage fallback")
+
+# Fallback to local storage if Azure is not configured
+USE_LOCAL_STORAGE = blob_service_client is None
+BASE_DIR = Path("clients") if USE_LOCAL_STORAGE else None
+if USE_LOCAL_STORAGE:
+    BASE_DIR.mkdir(exist_ok=True)
 
 def normalize_client_name(name: str) -> str:
     """Normalize client name to create a valid folder name"""
@@ -57,35 +82,103 @@ def normalize_client_name(name: str) -> str:
     normalized = normalized.strip('-')
     return normalized
 
+async def upload_to_blob_storage(blob_name: str, content: bytes, content_type: str = None) -> str:
+    """Upload content to Azure Blob Storage"""
+    if not blob_service_client:
+        raise Exception("Azure Blob Storage not configured")
+    
+    blob_client = blob_service_client.get_blob_client(container=CONTAINER_NAME, blob=blob_name)
+    blob_client.upload_blob(content, overwrite=True, content_settings=None if not content_type else 
+                           blob_client.get_blob_properties().content_settings)
+    return f"azure://{CONTAINER_NAME}/{blob_name}"
+
+async def download_from_blob_storage(blob_name: str) -> bytes:
+    """Download content from Azure Blob Storage"""
+    if not blob_service_client:
+        raise Exception("Azure Blob Storage not configured")
+    
+    blob_client = blob_service_client.get_blob_client(container=CONTAINER_NAME, blob=blob_name)
+    download_stream = blob_client.download_blob()
+    return download_stream.readall()
+
+async def save_file_to_storage(file_path: str, content: bytes) -> str:
+    """Save file to storage (Azure Blob Storage or local fallback)"""
+    if USE_LOCAL_STORAGE:
+        # Local storage fallback
+        path = Path(file_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        async with aiofiles.open(path, 'wb') as f:
+            await f.write(content)
+        return str(path)
+    else:
+        # Azure Blob Storage
+        return await upload_to_blob_storage(file_path, content)
+
+async def read_file_from_storage(file_path: str) -> bytes:
+    """Read file from storage (Azure Blob Storage or local fallback)"""
+    if USE_LOCAL_STORAGE:
+        # Local storage fallback
+        async with aiofiles.open(file_path, 'rb') as f:
+            return await f.read()
+    else:
+        # Azure Blob Storage
+        return await download_from_blob_storage(file_path)
+
+def get_blob_name(client_slug: str, file_type: str, period_date: str = None, is_processed: bool = False) -> str:
+    """Generate blob name for Azure Blob Storage"""
+    if period_date:
+        folder_type = "processed" if is_processed else "raw"
+        return f"{client_slug}/{folder_type}/{period_date}/{file_type}"
+    else:
+        folder_type = "processed" if is_processed else "raw"
+        return f"{client_slug}/{folder_type}/{file_type}"
+
 def create_client_structure(client_slug: str) -> dict:
     """Create the folder structure for a client"""
-    client_path = BASE_DIR / client_slug
-    raw_path = client_path / "raw"
-    processed_path = client_path / "processed"
-    
-    # Create directories
-    raw_path.mkdir(parents=True, exist_ok=True)
-    processed_path.mkdir(parents=True, exist_ok=True)
-    
-    return {
-        "client_path": str(client_path),
-        "raw_path": str(raw_path),
-        "processed_path": str(processed_path)
-    }
+    if USE_LOCAL_STORAGE:
+        # Local storage
+        client_path = BASE_DIR / client_slug
+        raw_path = client_path / "raw"
+        processed_path = client_path / "processed"
+        
+        # Create directories
+        raw_path.mkdir(parents=True, exist_ok=True)
+        processed_path.mkdir(parents=True, exist_ok=True)
+        
+        return {
+            "client_path": str(client_path),
+            "raw_path": str(raw_path),
+            "processed_path": str(processed_path)
+        }
+    else:
+        # Azure Blob Storage - virtual folders
+        return {
+            "client_path": f"azure://{CONTAINER_NAME}/{client_slug}",
+            "raw_path": f"azure://{CONTAINER_NAME}/{client_slug}/raw",
+            "processed_path": f"azure://{CONTAINER_NAME}/{client_slug}/processed"
+        }
 
 def create_period_structure(client_slug: str, period_date: str) -> dict:
     """Create period-specific folders"""
-    client_path = BASE_DIR / client_slug
-    raw_period_path = client_path / "raw" / period_date
-    processed_period_path = client_path / "processed" / period_date
-    
-    raw_period_path.mkdir(parents=True, exist_ok=True)
-    processed_period_path.mkdir(parents=True, exist_ok=True)
-    
-    return {
-        "raw_period_path": str(raw_period_path),
-        "processed_period_path": str(processed_period_path)
-    }
+    if USE_LOCAL_STORAGE:
+        # Local storage
+        client_path = BASE_DIR / client_slug
+        raw_period_path = client_path / "raw" / period_date
+        processed_period_path = client_path / "processed" / period_date
+        
+        raw_period_path.mkdir(parents=True, exist_ok=True)
+        processed_period_path.mkdir(parents=True, exist_ok=True)
+        
+        return {
+            "raw_period_path": str(raw_period_path),
+            "processed_period_path": str(processed_period_path)
+        }
+    else:
+        # Azure Blob Storage - virtual folders
+        return {
+            "raw_period_path": f"azure://{CONTAINER_NAME}/{client_slug}/raw/{period_date}",
+            "processed_period_path": f"azure://{CONTAINER_NAME}/{client_slug}/processed/{period_date}"
+        }
 
 async def extract_tables_from_pdf(file_path: str) -> List[dict]:
     """Extract tables from PDF using Azure Document Intelligence"""
@@ -99,9 +192,28 @@ async def extract_tables_from_pdf(file_path: str) -> List[dict]:
             credential=AzureKeyCredential(AZURE_KEY)
         )
         
-        with open(file_path, "rb") as document:
-            poller = client.begin_analyze_document("prebuilt-document", document.read())
-            result = poller.result()
+        # Handle both local files and Azure Blob Storage files
+        if file_path.startswith("azure://"):
+            # Download from Azure Blob Storage to temporary file
+            blob_name = file_path.replace(f"azure://{CONTAINER_NAME}/", "")
+            content = await download_from_blob_storage(blob_name)
+            
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
+                temp_file.write(content)
+                temp_file_path = temp_file.name
+            
+            try:
+                with open(temp_file_path, "rb") as document:
+                    poller = client.begin_analyze_document("prebuilt-document", document.read())
+                    result = poller.result()
+            finally:
+                # Clean up temporary file
+                os.unlink(temp_file_path)
+        else:
+            # Local file
+            with open(file_path, "rb") as document:
+                poller = client.begin_analyze_document("prebuilt-document", document.read())
+                result = poller.result()
         
         tables = []
         for table in result.tables:
@@ -124,14 +236,86 @@ async def extract_tables_from_pdf(file_path: str) -> List[dict]:
 def extract_tables_from_excel(file_path: str) -> List[dict]:
     """Extract tables from Excel file"""
     try:
-        # Read all sheets
-        excel_file = pd.ExcelFile(file_path)
-        tables = []
-        
-        for sheet_name in excel_file.sheet_names:
-            df = pd.read_excel(file_path, sheet_name=sheet_name)
-            if not df.empty:
-                # Convert DataFrame to list of dictionaries
+        # Handle both local files and Azure Blob Storage files
+        if file_path.startswith("azure://"):
+            # Download from Azure Blob Storage to temporary file
+            import asyncio
+            blob_name = file_path.replace(f"azure://{CONTAINER_NAME}/", "")
+            content = asyncio.run(download_from_blob_storage(blob_name))
+            
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as temp_file:
+                temp_file.write(content)
+                temp_file_path = temp_file.name
+            
+            try:
+                # Read all sheets
+                excel_file = pd.ExcelFile(temp_file_path)
+                tables = []
+                
+                for sheet_name in excel_file.sheet_names:
+                    df = pd.read_excel(temp_file_path, sheet_name=sheet_name)
+                    if not df.empty:
+                        # Convert DataFrame to list of dictionaries
+                        table_data = []
+                        for _, row in df.iterrows():
+                            row_dict = {}
+                            for i, value in enumerate(row):
+                                if pd.notna(value):
+                                    row_dict[f"column_{i}"] = str(value)
+                            if row_dict:
+                                table_data.append(row_dict)
+                        if table_data:
+                            tables.append(table_data)
+                
+                return tables
+            finally:
+                # Clean up temporary file
+                os.unlink(temp_file_path)
+        else:
+            # Local file
+            # Read all sheets
+            excel_file = pd.ExcelFile(file_path)
+            tables = []
+            
+            for sheet_name in excel_file.sheet_names:
+                df = pd.read_excel(file_path, sheet_name=sheet_name)
+                if not df.empty:
+                    # Convert DataFrame to list of dictionaries
+                    table_data = []
+                    for _, row in df.iterrows():
+                        row_dict = {}
+                        for i, value in enumerate(row):
+                            if pd.notna(value):
+                                row_dict[f"column_{i}"] = str(value)
+                        if row_dict:
+                            table_data.append(row_dict)
+                    if table_data:
+                        tables.append(table_data)
+            
+            return tables
+    except Exception as e:
+        logger.error(f"Error extracting tables from Excel: {e}")
+        return []
+
+def extract_tables_from_csv(file_path: str) -> List[dict]:
+    """Extract tables from CSV file"""
+    try:
+        # Handle both local files and Azure Blob Storage files
+        if file_path.startswith("azure://"):
+            # Download from Azure Blob Storage to temporary file
+            import asyncio
+            blob_name = file_path.replace(f"azure://{CONTAINER_NAME}/", "")
+            content = asyncio.run(download_from_blob_storage(blob_name))
+            
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as temp_file:
+                temp_file.write(content)
+                temp_file_path = temp_file.name
+            
+            try:
+                df = pd.read_csv(temp_file_path)
+                if df.empty:
+                    return []
+                
                 table_data = []
                 for _, row in df.iterrows():
                     row_dict = {}
@@ -140,31 +324,27 @@ def extract_tables_from_excel(file_path: str) -> List[dict]:
                             row_dict[f"column_{i}"] = str(value)
                     if row_dict:
                         table_data.append(row_dict)
-                if table_data:
-                    tables.append(table_data)
-        
-        return tables
-    except Exception as e:
-        logger.error(f"Error extracting tables from Excel: {e}")
-        return []
-
-def extract_tables_from_csv(file_path: str) -> List[dict]:
-    """Extract tables from CSV file"""
-    try:
-        df = pd.read_csv(file_path)
-        if df.empty:
-            return []
-        
-        table_data = []
-        for _, row in df.iterrows():
-            row_dict = {}
-            for i, value in enumerate(row):
-                if pd.notna(value):
-                    row_dict[f"column_{i}"] = str(value)
-            if row_dict:
-                table_data.append(row_dict)
-        
-        return [table_data] if table_data else []
+                
+                return [table_data] if table_data else []
+            finally:
+                # Clean up temporary file
+                os.unlink(temp_file_path)
+        else:
+            # Local file
+            df = pd.read_csv(file_path)
+            if df.empty:
+                return []
+            
+            table_data = []
+            for _, row in df.iterrows():
+                row_dict = {}
+                for i, value in enumerate(row):
+                    if pd.notna(value):
+                        row_dict[f"column_{i}"] = str(value)
+                if row_dict:
+                    table_data.append(row_dict)
+            
+            return [table_data] if table_data else []
     except Exception as e:
         logger.error(f"Error extracting tables from CSV: {e}")
         return []
@@ -217,9 +397,16 @@ async def create_client(client_name: str = Form(...)):
             raise HTTPException(status_code=400, detail="Invalid client name")
         
         # Check if client already exists
-        client_path = BASE_DIR / client_slug
-        if client_path.exists():
-            return {"message": "Client already exists", "client_slug": client_slug}
+        if USE_LOCAL_STORAGE:
+            client_path = BASE_DIR / client_slug
+            if client_path.exists():
+                return {"message": "Client already exists", "client_slug": client_slug}
+        else:
+            # Check if client exists in Azure Blob Storage
+            container_client = blob_service_client.get_container_client(CONTAINER_NAME)
+            blobs = container_client.list_blobs(name_starts_with=f"{client_slug}/")
+            if any(blob.name.startswith(f"{client_slug}/") for blob in blobs):
+                return {"message": "Client already exists", "client_slug": client_slug}
         
         # Create folder structure
         structure = create_client_structure(client_slug)
@@ -415,8 +602,11 @@ async def process_files(file_mappings: dict, period_structure: dict, period_name
     logger.info(f"Processing {period_name} with {len(file_mappings)} file mappings")
     
     for file_type, file in file_mappings.items():
-        logger.info(f"Checking {period_name} - {file_type}: {file is not None}")
-        if file:
+        # Check if file was actually uploaded (has filename)
+        file_uploaded = file is not None and file.filename
+        logger.info(f"Checking {period_name} - {file_type}: {file_uploaded}")
+        
+        if file_uploaded:
             # Validate file type
             allowed_extensions = {'.xlsx', '.csv', '.doc', '.docx', '.pdf'}
             file_extension = Path(file.filename).suffix.lower()
@@ -471,8 +661,11 @@ async def process_files_with_content(file_mappings: dict, period_structure: dict
     logger.info(f"Processing {period_name} with {len(file_mappings)} file mappings (using pre-read content)")
     
     for file_type, (file_obj, content) in file_mappings.items():
-        logger.info(f"Checking {period_name} - {file_type}: {file_obj is not None}")
-        if file_obj:
+        # Check if file was actually uploaded (has filename and content)
+        file_uploaded = file_obj is not None and file_obj.filename and content is not None
+        logger.info(f"Checking {period_name} - {file_type}: {file_uploaded}")
+        
+        if file_uploaded:
             # Validate file type
             allowed_extensions = {'.xlsx', '.csv', '.doc', '.docx', '.pdf'}
             file_extension = Path(file_obj.filename).suffix.lower()
@@ -483,35 +676,57 @@ async def process_files_with_content(file_mappings: dict, period_structure: dict
                     detail=f"File type {file_extension} not allowed for {file_type}"
                 )
             
-            # Save raw file
-            raw_file_path = Path(period_structure["raw_period_path"]) / f"{file_type}{file_extension}"
-            async with aiofiles.open(raw_file_path, 'wb') as f:
-                await f.write(content)
+            # Save raw file to storage
+            if USE_LOCAL_STORAGE:
+                raw_file_path = Path(period_structure["raw_period_path"]) / f"{file_type}{file_extension}"
+                async with aiofiles.open(raw_file_path, 'wb') as f:
+                    await f.write(content)
+                raw_file_path_str = str(raw_file_path)
+            else:
+                # Azure Blob Storage
+                blob_name = get_blob_name(
+                    client_slug=period_structure["raw_period_path"].split('/')[2],  # Extract client_slug
+                    file_type=f"{file_type}{file_extension}",
+                    period_date=period_structure["raw_period_path"].split('/')[-1]  # Extract period_date
+                )
+                raw_file_path_str = await upload_to_blob_storage(blob_name, content)
             
             # Process file based on type
             tables = []
             if file_extension == '.pdf':
-                tables = await extract_tables_from_pdf(str(raw_file_path))
+                tables = await extract_tables_from_pdf(raw_file_path_str)
             elif file_extension in ['.xlsx']:
-                tables = extract_tables_from_excel(str(raw_file_path))
+                tables = extract_tables_from_excel(raw_file_path_str)
             elif file_extension == '.csv':
-                tables = extract_tables_from_csv(str(raw_file_path))
+                tables = extract_tables_from_csv(raw_file_path_str)
             
             # Standardize data
             if tables:
                 standardized_data = standardize_table_data(tables[0])  # Use first table
                 
-                # Save processed data
-                processed_file_path = Path(period_structure["processed_period_path"]) / f"{file_type}-processed.json"
-                async with aiofiles.open(processed_file_path, 'w', encoding='utf-8') as f:
-                    await f.write(json.dumps(standardized_data, indent=2, ensure_ascii=False))
+                # Save processed data to storage
+                if USE_LOCAL_STORAGE:
+                    processed_file_path = Path(period_structure["processed_period_path"]) / f"{file_type}-processed.json"
+                    async with aiofiles.open(processed_file_path, 'w', encoding='utf-8') as f:
+                        await f.write(json.dumps(standardized_data, indent=2, ensure_ascii=False))
+                    processed_file_path_str = str(processed_file_path)
+                else:
+                    # Azure Blob Storage
+                    processed_blob_name = get_blob_name(
+                        client_slug=period_structure["processed_period_path"].split('/')[2],  # Extract client_slug
+                        file_type=f"{file_type}-processed.json",
+                        period_date=period_structure["processed_period_path"].split('/')[-1],  # Extract period_date
+                        is_processed=True
+                    )
+                    processed_content = json.dumps(standardized_data, indent=2, ensure_ascii=False).encode('utf-8')
+                    processed_file_path_str = await upload_to_blob_storage(processed_blob_name, processed_content)
                 
                 results.append({
                     "period": period_name,
                     "file_type": file_type,
                     "original_filename": file_obj.filename,
-                    "raw_path": str(raw_file_path),
-                    "processed_path": str(processed_file_path),
+                    "raw_path": raw_file_path_str,
+                    "processed_path": processed_file_path_str,
                     "records_processed": standardized_data.get("total_records", 0)
                 })
     
@@ -530,15 +745,26 @@ async def upload_unfixed_files(
         
         results = []
         for file in files:
-            # Save raw file
-            raw_file_path = Path(period_structure["raw_period_path"]) / file.filename
-            async with aiofiles.open(raw_file_path, 'wb') as f:
-                content = await file.read()
-                await f.write(content)
+            content = await file.read()
+            
+            # Save raw file to storage
+            if USE_LOCAL_STORAGE:
+                raw_file_path = Path(period_structure["raw_period_path"]) / file.filename
+                async with aiofiles.open(raw_file_path, 'wb') as f:
+                    await f.write(content)
+                raw_file_path_str = str(raw_file_path)
+            else:
+                # Azure Blob Storage
+                blob_name = get_blob_name(
+                    client_slug=client_slug,
+                    file_type=file.filename,
+                    period_date=period_date
+                )
+                raw_file_path_str = await upload_to_blob_storage(blob_name, content)
             
             results.append({
                 "filename": file.filename,
-                "raw_path": str(raw_file_path),
+                "raw_path": raw_file_path_str,
                 "status": "saved (unfixed processing not implemented yet)"
             })
         
@@ -556,15 +782,28 @@ async def upload_unfixed_files(
 async def get_client_structure(client_slug: str):
     """Get client folder structure"""
     try:
-        client_path = BASE_DIR / client_slug
-        if not client_path.exists():
-            raise HTTPException(status_code=404, detail="Client not found")
-        
-        structure = {
-            "client_slug": client_slug,
-            "raw_path": str(client_path / "raw"),
-            "processed_path": str(client_path / "processed")
-        }
+        if USE_LOCAL_STORAGE:
+            client_path = BASE_DIR / client_slug
+            if not client_path.exists():
+                raise HTTPException(status_code=404, detail="Client not found")
+            
+            structure = {
+                "client_slug": client_slug,
+                "raw_path": str(client_path / "raw"),
+                "processed_path": str(client_path / "processed")
+            }
+        else:
+            # Check if client exists in Azure Blob Storage
+            container_client = blob_service_client.get_container_client(CONTAINER_NAME)
+            blobs = container_client.list_blobs(name_starts_with=f"{client_slug}/")
+            if not any(blob.name.startswith(f"{client_slug}/") for blob in blobs):
+                raise HTTPException(status_code=404, detail="Client not found")
+            
+            structure = {
+                "client_slug": client_slug,
+                "raw_path": f"azure://{CONTAINER_NAME}/{client_slug}/raw",
+                "processed_path": f"azure://{CONTAINER_NAME}/{client_slug}/processed"
+            }
         
         return structure
     except Exception as e:

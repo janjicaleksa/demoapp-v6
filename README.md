@@ -8,6 +8,7 @@ A FastAPI-based web application for processing and standardizing financial docum
 - **Document Processing**: Support for Excel, CSV, PDF, and Word documents
 - **AI-Powered Standardization**: Convert various table formats to standardized JSON structure
 - **Azure Document Intelligence Integration**: PDF table extraction using Azure AI
+- **Azure Blob Storage Integration**: Cloud-based file storage with local fallback
 - **Period-based Organization**: Automatic folder creation based on period dates
 - **Modern UI**: Clean, responsive interface built with Tailwind CSS
 
@@ -21,7 +22,7 @@ tabele-v6/
 ├── templates/
 │   └── index.html         # Main web interface
 ├── static/                # Static files (CSS, JS, images)
-└── clients/               # Generated client data (created at runtime)
+└── clients/               # Generated client data (local fallback)
     └── {client_slug}/
         ├── raw/
         │   └── {period_date}/
@@ -50,6 +51,34 @@ tabele-v6/
      AZURE_ENDPOINT=your-azure-endpoint
      AZURE_KEY=your-azure-key
      ```
+
+4. **Set up Azure Blob Storage** (optional, for cloud storage):
+   - Create an Azure Storage Account
+   - Get the connection string from Azure Portal > Storage Account > Access keys
+   - Set environment variable:
+     ```bash
+     export AZURE_STORAGE_CONNECTION_STRING="your-connection-string"
+     ```
+   - Or add to `.env` file:
+     ```
+     AZURE_STORAGE_CONNECTION_STRING=your-connection-string
+     ```
+
+## Storage Configuration
+
+The application supports two storage modes:
+
+### Azure Blob Storage (Recommended)
+- **Automatic**: When `AZURE_STORAGE_CONNECTION_STRING` is configured
+- **Benefits**: Scalable, reliable, cloud-based storage
+- **Structure**: Virtual folders in Azure Blob Storage container
+- **Path format**: `azure://clients/{client_slug}/{raw|processed}/{period_date}/`
+
+### Local Storage (Fallback)
+- **Automatic**: When Azure Blob Storage is not configured
+- **Benefits**: Simple, no external dependencies
+- **Structure**: Local file system directories
+- **Path format**: `clients/{client_slug}/{raw|processed}/{period_date}/`
 
 ## Usage
 
@@ -115,6 +144,22 @@ The AI processor converts various table formats into a standardized JSON structu
 
 When a client is created, the following structure is automatically generated:
 
+### Azure Blob Storage
+```
+azure://clients/{client_slug}/
+├── raw/
+│   └── {period_date}/
+│       ├── kupci-kraj-fiskalne-godine.xlsx
+│       ├── kupci-bilans-preseka.pdf
+│       └── ...
+└── processed/
+    └── {period_date}/
+        ├── kupci-kraj-fiskalne-godine-processed.json
+        ├── kupci-bilans-preseka-processed.json
+        └── ...
+```
+
+### Local Storage
 ```
 clients/
 └── {client_slug}/
@@ -135,6 +180,7 @@ clients/
 ### Environment Variables
 - `AZURE_ENDPOINT`: Azure Document Intelligence endpoint
 - `AZURE_KEY`: Azure Document Intelligence API key
+- `AZURE_STORAGE_CONNECTION_STRING`: Azure Blob Storage connection string (optional)
 
 ### File Size Limits
 - Default FastAPI file upload limits apply
@@ -161,12 +207,16 @@ The current `standardize_table_data` function uses simple pattern matching. For 
    - PDF processing will be skipped
    - Check environment variables or `.env` file
 
-2. **File upload errors**:
+2. **Azure Blob Storage not configured**:
+   - Application will automatically fall back to local storage
+   - Check `AZURE_STORAGE_CONNECTION_STRING` environment variable
+
+3. **File upload errors**:
    - Ensure file types are supported
    - Check file size limits
    - Verify file integrity
 
-3. **Processing errors**:
+4. **Processing errors**:
    - Check file format compatibility
    - Verify Azure service status (for PDFs)
    - Review server logs for detailed error messages
