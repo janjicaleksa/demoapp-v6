@@ -87,10 +87,13 @@ async def upload_to_blob_storage(blob_name: str, content: bytes, content_type: s
     if not blob_service_client:
         raise Exception("Azure Blob Storage not configured")
     
+    logger.info(f"Uploading to Azure Blob Storage: container={CONTAINER_NAME}, blob={blob_name}")
     blob_client = blob_service_client.get_blob_client(container=CONTAINER_NAME, blob=blob_name)
     blob_client.upload_blob(content, overwrite=True, content_settings=None if not content_type else 
                            blob_client.get_blob_properties().content_settings)
-    return f"azure://{CONTAINER_NAME}/{blob_name}"
+    result_path = f"azure://{CONTAINER_NAME}/{blob_name}"
+    logger.info(f"Successfully uploaded to: {result_path}")
+    return result_path
 
 async def download_from_blob_storage(blob_name: str) -> bytes:
     """Download content from Azure Blob Storage"""
@@ -128,10 +131,14 @@ def get_blob_name(client_slug: str, file_type: str, period_date: str = None, is_
     """Generate blob name for Azure Blob Storage"""
     if period_date:
         folder_type = "processed" if is_processed else "raw"
-        return f"{client_slug}/{folder_type}/{period_date}/{file_type}"
+        blob_name = f"{client_slug}/{folder_type}/{period_date}/{file_type}"
+        logger.info(f"Generated blob name: {blob_name} (client_slug: {client_slug}, file_type: {file_type}, period_date: {period_date}, is_processed: {is_processed})")
+        return blob_name
     else:
         folder_type = "processed" if is_processed else "raw"
-        return f"{client_slug}/{folder_type}/{file_type}"
+        blob_name = f"{client_slug}/{folder_type}/{file_type}"
+        logger.info(f"Generated blob name: {blob_name} (client_slug: {client_slug}, file_type: {file_type}, is_processed: {is_processed})")
+        return blob_name
 
 def create_client_structure(client_slug: str) -> dict:
     """Create the folder structure for a client"""
@@ -391,7 +398,9 @@ async def home(request: Request):
 async def create_client(client_name: str = Form(...)):
     """Create a new client and folder structure"""
     try:
+        logger.info(f"Creating client with name: {client_name}")
         client_slug = normalize_client_name(client_name)
+        logger.info(f"Normalized client slug: {client_slug}")
         
         if not client_slug:
             raise HTTPException(status_code=400, detail="Invalid client name")
@@ -400,16 +409,19 @@ async def create_client(client_name: str = Form(...)):
         if USE_LOCAL_STORAGE:
             client_path = BASE_DIR / client_slug
             if client_path.exists():
+                logger.info(f"Client already exists locally: {client_slug}")
                 return {"message": "Client already exists", "client_slug": client_slug}
         else:
             # Check if client exists in Azure Blob Storage
             container_client = blob_service_client.get_container_client(CONTAINER_NAME)
             blobs = container_client.list_blobs(name_starts_with=f"{client_slug}/")
             if any(blob.name.startswith(f"{client_slug}/") for blob in blobs):
+                logger.info(f"Client already exists in Azure: {client_slug}")
                 return {"message": "Client already exists", "client_slug": client_slug}
         
         # Create folder structure
         structure = create_client_structure(client_slug)
+        logger.info(f"Created client structure: {structure}")
         
         return {
             "message": "Client created successfully",
@@ -436,6 +448,8 @@ async def upload_fixed_files(
 ):
     """Upload fixed files for processing - handles both periods simultaneously"""
     try:
+        logger.info(f"Processing upload for client_slug: {client_slug}")
+        logger.info(f"Period 1 date: {period1_date}, Period 2 date: {period2_date}")
         all_results = []
         
         # Read and store file content for all files to avoid consumption issues
@@ -476,6 +490,7 @@ async def upload_fixed_files(
             
             # Create period 1 structure
             period1_structure = create_period_structure(client_slug, period1_date)
+            logger.info(f"Created period 1 structure: {period1_structure}")
             period1_results = await process_files_with_content(period1_file_mappings, period1_structure, "Period 1")
             all_results.extend(period1_results)
         
@@ -498,6 +513,7 @@ async def upload_fixed_files(
             
             # Create period 2 structure
             period2_structure = create_period_structure(client_slug, period2_date)
+            logger.info(f"Created period 2 structure: {period2_structure}")
             period2_results = await process_files_with_content(period2_file_mappings, period2_structure, "Period 2")
             all_results.extend(period2_results)
         
@@ -620,35 +636,57 @@ async def process_files(file_mappings: dict, period_structure: dict, period_name
             # Read file content once and store it in memory
             content = await file.read()
             
-            # Save raw file
-            raw_file_path = Path(period_structure["raw_period_path"]) / f"{file_type}{file_extension}"
-            async with aiofiles.open(raw_file_path, 'wb') as f:
-                await f.write(content)
+            # Save raw file to storage
+            if USE_LOCAL_STORAGE:
+                raw_file_path = Path(period_structure["raw_period_path"]) / f"{file_type}{file_extension}"
+                async with aiofiles.open(raw_file_path, 'wb') as f:
+                    await f.write(content)
+                raw_file_path_str = str(raw_file_path)
+            else:
+                # Azure Blob Storage
+                blob_name = get_blob_name(
+                    client_slug=period_structure["raw_period_path"].split('/')[3],  # Extract client_slug
+                    file_type=f"{file_type}{file_extension}",
+                    period_date=period_structure["raw_period_path"].split('/')[-1]  # Extract period_date
+                )
+                raw_file_path_str = await upload_to_blob_storage(blob_name, content)
             
             # Process file based on type
             tables = []
             if file_extension == '.pdf':
-                tables = await extract_tables_from_pdf(str(raw_file_path))
+                tables = await extract_tables_from_pdf(raw_file_path_str)
             elif file_extension in ['.xlsx']:
-                tables = extract_tables_from_excel(str(raw_file_path))
+                tables = extract_tables_from_excel(raw_file_path_str)
             elif file_extension == '.csv':
-                tables = extract_tables_from_csv(str(raw_file_path))
+                tables = extract_tables_from_csv(raw_file_path_str)
             
             # Standardize data
             if tables:
                 standardized_data = standardize_table_data(tables[0])  # Use first table
                 
-                # Save processed data
-                processed_file_path = Path(period_structure["processed_period_path"]) / f"{file_type}-processed.json"
-                async with aiofiles.open(processed_file_path, 'w', encoding='utf-8') as f:
-                    await f.write(json.dumps(standardized_data, indent=2, ensure_ascii=False))
+                # Save processed data to storage
+                if USE_LOCAL_STORAGE:
+                    processed_file_path = Path(period_structure["processed_period_path"]) / f"{file_type}-processed.json"
+                    async with aiofiles.open(processed_file_path, 'w', encoding='utf-8') as f:
+                        await f.write(json.dumps(standardized_data, indent=2, ensure_ascii=False))
+                    processed_file_path_str = str(processed_file_path)
+                else:
+                    # Azure Blob Storage
+                    processed_blob_name = get_blob_name(
+                        client_slug=period_structure["processed_period_path"].split('/')[3],  # Extract client_slug
+                        file_type=f"{file_type}-processed.json",
+                        period_date=period_structure["processed_period_path"].split('/')[-1],  # Extract period_date
+                        is_processed=True
+                    )
+                    processed_content = json.dumps(standardized_data, indent=2, ensure_ascii=False).encode('utf-8')
+                    processed_file_path_str = await upload_to_blob_storage(processed_blob_name, processed_content)
                 
                 results.append({
                     "period": period_name,
                     "file_type": file_type,
                     "original_filename": file.filename,
-                    "raw_path": str(raw_file_path),
-                    "processed_path": str(processed_file_path),
+                    "raw_path": raw_file_path_str,
+                    "processed_path": processed_file_path_str,
                     "records_processed": standardized_data.get("total_records", 0)
                 })
     
@@ -685,7 +723,7 @@ async def process_files_with_content(file_mappings: dict, period_structure: dict
             else:
                 # Azure Blob Storage
                 blob_name = get_blob_name(
-                    client_slug=period_structure["raw_period_path"].split('/')[2],  # Extract client_slug
+                    client_slug=period_structure["raw_period_path"].split('/')[3],  # Extract client_slug
                     file_type=f"{file_type}{file_extension}",
                     period_date=period_structure["raw_period_path"].split('/')[-1]  # Extract period_date
                 )
@@ -713,7 +751,7 @@ async def process_files_with_content(file_mappings: dict, period_structure: dict
                 else:
                     # Azure Blob Storage
                     processed_blob_name = get_blob_name(
-                        client_slug=period_structure["processed_period_path"].split('/')[2],  # Extract client_slug
+                        client_slug=period_structure["processed_period_path"].split('/')[3],  # Extract client_slug
                         file_type=f"{file_type}-processed.json",
                         period_date=period_structure["processed_period_path"].split('/')[-1],  # Extract period_date
                         is_processed=True
