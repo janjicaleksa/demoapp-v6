@@ -1,11 +1,14 @@
-# Azure Document Intelligence Configuration
-# Get these values from your Azure portal
-AZURE_ENDPOINT=https://your-resource-name.cognitiveservices.azure.com/
-AZURE_KEY=your-azure-key-here
+# Azure Document Intelligence
+AZURE_ENDPOINT=your_azure_endpoint_here
+AZURE_KEY=your_azure_key_here
 
-# Azure Blob Storage Configuration
-# Get this from your Azure Storage Account > Access keys
-AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=https;AccountName=your-storage-account;AccountKey=your-account-key;EndpointSuffix=core.windows.net
+# Azure Blob Storage
+AZURE_STORAGE_CONNECTION_STRING=your_connection_string_here
+
+# Azure OpenAI (for AI column mapping)
+OPENAI_API_KEY=your_openai_api_key_here
+OPENAI_ENDPOINT=your_openai_endpoint_here
+OPENAI_API_VERSION=2024-02-15-preview
 
 # Optional: Server Configuration
 # HOST=0.0.0.0

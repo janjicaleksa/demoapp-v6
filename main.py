@@ -18,6 +18,8 @@ from azure.storage.blob import BlobServiceClient, BlobClient, ContainerClient
 import logging
 import tempfile
 import io
+import openai
+from typing import Dict, List, Any, Optional
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -47,6 +49,27 @@ AZURE_KEY = os.getenv("AZURE_KEY", "")
 # Azure Blob Storage configuration
 AZURE_STORAGE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING", "")
 CONTAINER_NAME = "clients"
+
+# OpenAI configuration for AI column mapping
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_ENDPOINT = os.getenv("OPENAI_ENDPOINT", "")
+OPENAI_API_VERSION = os.getenv("OPENAI_API_VERSION", "2024-02-15-preview")
+
+# Initialize OpenAI client if configured
+openai_client = None
+if OPENAI_API_KEY and OPENAI_ENDPOINT:
+    try:
+        openai_client = openai.AzureOpenAI(
+            api_key=OPENAI_API_KEY,
+            api_version=OPENAI_API_VERSION,
+            azure_endpoint=OPENAI_ENDPOINT
+        )
+        logger.info("Azure OpenAI client initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize Azure OpenAI client: {e}")
+        openai_client = None
+else:
+    logger.warning("OpenAI credentials not configured, AI column mapping will use fallback")
 
 # Initialize Azure Blob Storage client
 blob_service_client = None
@@ -356,6 +379,254 @@ def extract_tables_from_csv(file_path: str) -> List[dict]:
         logger.error(f"Error extracting tables from CSV: {e}")
         return []
 
+def determine_file_type(filename: str) -> str:
+    """Determine if file is 'kupci' or 'dobavljaci' based on filename"""
+    filename_lower = filename.lower()
+    
+    if 'kupci' in filename_lower:
+        return 'kupci'
+    elif 'dobavljaci' in filename_lower:
+        return 'dobavljaci'
+    else:
+        # Default to kupci if no clear indicator
+        return 'kupci'
+
+def get_desired_keys(file_type: str) -> List[str]:
+    """Get desired mapping keys based on file type"""
+    if file_type == 'kupci':
+        return ['konto', 'naziv_partnera', 'duguje', 'saldo']
+    elif file_type == 'dobavljaci':
+        return ['konto', 'naziv_partnera', 'potrazuje', 'saldo']
+    else:
+        return ['konto', 'naziv_partnera', 'duguje', 'potrazuje', 'saldo']
+
+async def ai_column_mapping(tables: List[dict], filename: str) -> Dict[str, Any]:
+    """
+    AI column mapping function that analyzes table headers and creates mappings
+    """
+    try:
+        file_type = determine_file_type(filename)
+        desired_keys = get_desired_keys(file_type)
+        
+        logger.info(f"AI column mapping for file: {filename}, type: {file_type}, desired keys: {desired_keys}")
+        
+        # If OpenAI is not available, use fallback logic
+        if not openai_client:
+            return await fallback_column_mapping(tables, desired_keys, file_type)
+        
+        # Prepare table headers for AI analysis
+        table_headers = []
+        for i, table in enumerate(tables):
+            if table:
+                # Extract headers from first row
+                headers = list(table[0].keys()) if table else []
+                table_headers.append({
+                    "table_index": i,
+                    "headers": headers,
+                    "sample_data": table[:3] if table else []  # First 3 rows for context
+                })
+        
+        # Create AI prompt for column mapping
+        prompt = create_column_mapping_prompt(table_headers, desired_keys, file_type)
+        
+        # Call Azure OpenAI
+        response = await call_azure_openai(prompt)
+        
+        # Parse AI response
+        column_mapping = parse_ai_response(response, desired_keys)
+        
+        # Create mapping result
+        mapping_result = {
+            "filename": filename,
+            "file_type": file_type,
+            "desired_keys": desired_keys,
+            "column_mapping": column_mapping,
+            "tables_analyzed": len(table_headers),
+            "mapping_confidence": "high" if column_mapping else "low"
+        }
+        
+        logger.info(f"AI column mapping completed: {mapping_result}")
+        return mapping_result
+        
+    except Exception as e:
+        logger.error(f"Error in AI column mapping: {e}")
+        # Fallback to basic mapping
+        return await fallback_column_mapping(tables, desired_keys, determine_file_type(filename))
+
+def create_column_mapping_prompt(table_headers: List[dict], desired_keys: List[str], file_type: str) -> str:
+    """Create prompt for AI column mapping"""
+    
+    prompt = f"""
+You are an expert data analyst specializing in financial document processing. You need to map table columns to standardized keys for {file_type} files.
+
+DESIRED MAPPING KEYS:
+{', '.join(desired_keys)}
+
+TABLES TO ANALYZE:
+"""
+    
+    for table_info in table_headers:
+        prompt += f"\nTable {table_info['table_index']}:\n"
+        prompt += f"Headers: {', '.join(table_info['headers'])}\n"
+        if table_info['sample_data']:
+            prompt += "Sample data (first 3 rows):\n"
+            for i, row in enumerate(table_info['sample_data']):
+                prompt += f"Row {i+1}: {row}\n"
+        prompt += "\n"
+    
+    prompt += f"""
+INSTRUCTIONS:
+1. Analyze each table's headers and sample data
+2. Map the headers to the desired keys: {', '.join(desired_keys)}
+3. Consider semantic similarity, abbreviations, and common variations
+4. For each desired key, provide the most likely matching header
+5. If no good match is found, use null
+6. Consider the context: this is a {file_type} file
+
+RESPONSE FORMAT (JSON):
+{{
+    "table_mappings": [
+        {{
+            "table_index": 0,
+            "mapping": {{
+                "{desired_keys[0]}": "matching_header_or_null",
+                "{desired_keys[1]}": "matching_header_or_null",
+                ...
+            }}
+        }}
+    ]
+}}
+
+Provide only the JSON response, no additional text.
+"""
+    
+    return prompt
+
+async def call_azure_openai(prompt: str) -> str:
+    """Call Azure OpenAI API"""
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-4",  # or your specific model name
+            messages=[
+                {"role": "system", "content": "You are a data mapping expert. Provide only JSON responses."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1,
+            max_tokens=1000
+        )
+        
+        return response.choices[0].message.content.strip()
+        
+    except Exception as e:
+        logger.error(f"Error calling Azure OpenAI: {e}")
+        raise
+
+def parse_ai_response(response: str, desired_keys: List[str]) -> Dict[str, Any]:
+    """Parse AI response and extract column mappings"""
+    try:
+        # Clean response and extract JSON
+        response = response.strip()
+        if response.startswith('```json'):
+            response = response[7:]
+        if response.endswith('```'):
+            response = response[:-3]
+        
+        # Parse JSON
+        import json
+        parsed = json.loads(response)
+        
+        # Extract mappings
+        mappings = {}
+        if 'table_mappings' in parsed:
+            for table_mapping in parsed['table_mappings']:
+                table_index = table_mapping.get('table_index', 0)
+                mapping = table_mapping.get('mapping', {})
+                mappings[f"table_{table_index}"] = mapping
+        
+        return mappings
+        
+    except Exception as e:
+        logger.error(f"Error parsing AI response: {e}")
+        return {}
+
+async def fallback_column_mapping(tables: List[dict], desired_keys: List[str], file_type: str) -> Dict[str, Any]:
+    """Fallback column mapping when AI is not available"""
+    logger.info("Using fallback column mapping")
+    
+    mappings = {}
+    
+    for i, table in enumerate(tables):
+        if not table:
+            continue
+            
+        # Get headers from first row
+        headers = list(table[0].keys()) if table else []
+        
+        # Simple keyword-based mapping
+        mapping = {}
+        for desired_key in desired_keys:
+            best_match = None
+            
+            # Look for exact matches first
+            for header in headers:
+                if desired_key.lower() in header.lower():
+                    best_match = header
+                    break
+            
+            # Look for semantic matches
+            if not best_match:
+                semantic_matches = {
+                    'konto': ['account', 'racun', 'konto', 'broj'],
+                    'naziv_partnera': ['naziv', 'name', 'partner', 'partnera', 'klijent'],
+                    'duguje': ['duguje', 'debit', 'dugovanje'],
+                    'potrazuje': ['potrazuje', 'credit', 'potrazivanje'],
+                    'saldo': ['saldo', 'balance', 'stanje']
+                }
+                
+                if desired_key in semantic_matches:
+                    for keyword in semantic_matches[desired_key]:
+                        for header in headers:
+                            if keyword.lower() in header.lower():
+                                best_match = header
+                                break
+                        if best_match:
+                            break
+            
+            mapping[desired_key] = best_match
+        
+        mappings[f"table_{i}"] = mapping
+    
+    return {
+        "filename": "unknown",
+        "file_type": file_type,
+        "desired_keys": desired_keys,
+        "column_mapping": mappings,
+        "tables_analyzed": len(tables),
+        "mapping_confidence": "low"
+    }
+
+async def save_column_mapping(mapping_result: Dict[str, Any], storage_path: str, filename: str) -> str:
+    """Save column mapping to JSON file"""
+    try:
+        # Create filename for mapping
+        mapping_filename = f"{filename}_column_mapping.json"
+        
+        if USE_LOCAL_STORAGE:
+            # Local storage
+            mapping_path = Path(storage_path) / mapping_filename
+            async with aiofiles.open(mapping_path, 'w', encoding='utf-8') as f:
+                await f.write(json.dumps(mapping_result, indent=2, ensure_ascii=False))
+            return str(mapping_path)
+        else:
+            # Azure Blob Storage
+            blob_name = f"{storage_path.replace('azure://' + CONTAINER_NAME + '/', '')}/{mapping_filename}"
+            content = json.dumps(mapping_result, indent=2, ensure_ascii=False).encode('utf-8')
+            return await upload_to_blob_storage(blob_name, content)
+            
+    except Exception as e:
+        logger.error(f"Error saving column mapping: {e}")
+        raise
+
 def standardize_table_data(table_data: List[dict]) -> dict:
     """AI standardizer - converts table data to standardized format"""
     # This is a simplified AI standardizer
@@ -388,6 +659,50 @@ def standardize_table_data(table_data: List[dict]) -> dict:
         "standardized_records": standardized_data,
         "total_records": len(standardized_data)
     }
+
+def standardize_table_data_with_mapping(table_data: List[dict], mapping_result: Dict[str, Any]) -> dict:
+    """Standardize table data using AI-generated column mapping"""
+    try:
+        file_type = mapping_result.get("file_type", "unknown")
+        desired_keys = mapping_result.get("desired_keys", [])
+        column_mapping = mapping_result.get("column_mapping", {})
+        
+        # Get the first table mapping (assuming single table for now)
+        table_mapping = list(column_mapping.values())[0] if column_mapping else {}
+        
+        standardized_data = []
+        
+        for row in table_data:
+            standardized_row = {}
+            
+            # Map each desired key to the corresponding column
+            for desired_key in desired_keys:
+                mapped_column = table_mapping.get(desired_key)
+                if mapped_column and mapped_column in row:
+                    standardized_row[desired_key] = str(row[mapped_column])
+                else:
+                    # Try to find a match using fallback logic
+                    for col_name, col_value in row.items():
+                        if any(keyword in str(col_value).lower() for keyword in [desired_key, desired_key.replace('_', '')]):
+                            standardized_row[desired_key] = str(col_value)
+                            break
+                    else:
+                        standardized_row[desired_key] = ""
+            
+            if any(standardized_row.values()):  # Only add if we have some data
+                standardized_data.append(standardized_row)
+        
+        return {
+            "standardized_records": standardized_data,
+            "total_records": len(standardized_data),
+            "mapping_used": table_mapping,
+            "file_type": file_type
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in standardize_table_data_with_mapping: {e}")
+        # Fallback to original standardization
+        return standardize_table_data(table_data)
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
@@ -738,9 +1053,19 @@ async def process_files_with_content(file_mappings: dict, period_structure: dict
             elif file_extension == '.csv':
                 tables = extract_tables_from_csv(raw_file_path_str)
             
-            # Standardize data
+            # AI Column Mapping - NEW STEP
             if tables:
-                standardized_data = standardize_table_data(tables[0])  # Use first table
+                column_mapping_result = await ai_column_mapping(tables, file_obj.filename)
+                
+                # Save column mapping to storage
+                mapping_path = await save_column_mapping(
+                    column_mapping_result, 
+                    period_structure["raw_period_path"], 
+                    file_type
+                )
+                
+                # Standardize data using the mapping
+                standardized_data = standardize_table_data_with_mapping(tables[0], column_mapping_result)
                 
                 # Save processed data to storage
                 if USE_LOCAL_STORAGE:
@@ -764,8 +1089,10 @@ async def process_files_with_content(file_mappings: dict, period_structure: dict
                     "file_type": file_type,
                     "original_filename": file_obj.filename,
                     "raw_path": raw_file_path_str,
+                    "column_mapping_path": mapping_path,
                     "processed_path": processed_file_path_str,
-                    "records_processed": standardized_data.get("total_records", 0)
+                    "records_processed": standardized_data.get("total_records", 0),
+                    "mapping_confidence": column_mapping_result.get("mapping_confidence", "unknown")
                 })
     
     return results
