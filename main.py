@@ -9,21 +9,28 @@ import json
 import pandas as pd
 from datetime import datetime
 from pathlib import Path
+from collections import defaultdict
+from dotenv import load_dotenv
 import aiofiles
-from typing import List, Optional
 import re
 from azure.ai.formrecognizer import DocumentAnalysisClient
+from azure.ai.inference import ChatCompletionsClient
+from azure.ai.inference.models import SystemMessage, UserMessage
 from azure.core.credentials import AzureKeyCredential
-from azure.storage.blob import BlobServiceClient, BlobClient, ContainerClient
+from azure.storage.blob import BlobServiceClient, ContentSettings, BlobClient, ContainerClient
 import logging
+import logging.config
 import tempfile
-import io
-import openai
 from typing import Dict, List, Any, Optional
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logging.config.dictConfig({
+    'version':1,
+    'disable_existing_loggers':True,
+    'loggers': { '': {'level':'INFO'}}
+})
+logger = logging.getLogger('azure')
+logger.setLevel(logging.ERROR)
 
 app = FastAPI(title="AI Processor Kupci Dobavljaci", version="1.0.0")
 
@@ -42,42 +49,44 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # Templates
 templates = Jinja2Templates(directory="templates")
 
+# Loading .env file
+load_dotenv()
+
 # Azure Document Intelligence configuration
-AZURE_ENDPOINT = os.getenv("AZURE_ENDPOINT", "")
-AZURE_KEY = os.getenv("AZURE_KEY", "")
+AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT = os.getenv("AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT", "")
+AZURE_DOCUMENT_INTELLIGENCE_KEY = os.getenv("AZURE_DOCUMENT_INTELLIGENCE_KEY", "")
 
 # Azure Blob Storage configuration
-AZURE_STORAGE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING", "")
-CONTAINER_NAME = "clients"
+AZURE_BLOB_STORAGE_CONNECTION_STRING = os.getenv("AZURE_BLOB_STORAGE_CONNECTION_STRING", "")
+AZURE_BLOB_STORAGE_CONTAINER_NAME = os.getenv("AZURE_BLOB_STORAGE_CONTAINER_NAME", "")
 
 # OpenAI configuration for AI column mapping
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_ENDPOINT = os.getenv("OPENAI_ENDPOINT", "")
-OPENAI_API_VERSION = os.getenv("OPENAI_API_VERSION", "2024-02-15-preview")
+AZURE_AI_FOUNDRY_CONNECTION = os.getenv("AZURE_AI_FOUNDRY_CONNECTION", "")
+AZURE_AI_FOUNDRY_KEY = os.getenv("AZURE_AI_FOUNDRY_KEY", "")
+AZURE_AI_FOUNDRY_MODEL = os.getenv("AZURE_AI_FOUNDRY_MODEL", "")
 
 # Initialize OpenAI client if configured
-openai_client = None
-if OPENAI_API_KEY and OPENAI_ENDPOINT:
+ai_foundry_client = None
+if AZURE_AI_FOUNDRY_CONNECTION:
     try:
-        openai_client = openai.AzureOpenAI(
-            api_key=OPENAI_API_KEY,
-            api_version=OPENAI_API_VERSION,
-            azure_endpoint=OPENAI_ENDPOINT
+        ai_foundry_client = ChatCompletionsClient(
+            endpoint=AZURE_AI_FOUNDRY_CONNECTION,
+            credential=AzureKeyCredential(AZURE_AI_FOUNDRY_KEY)
         )
-        logger.info("Azure OpenAI client initialized successfully")
+        logger.info("Azure AI Foundry client initialized successfully")
     except Exception as e:
-        logger.error(f"Failed to initialize Azure OpenAI client: {e}")
-        openai_client = None
+        logger.error(f"Failed to initialize Azure AI Foundry client: {e}")
+        ai_foundry_client = None
 else:
-    logger.warning("OpenAI credentials not configured, AI column mapping will use fallback")
+    logger.warning("Azure AI Foundry credentials not configured, AI column mapping will use fallback")
 
 # Initialize Azure Blob Storage client
 blob_service_client = None
-if AZURE_STORAGE_CONNECTION_STRING:
+if AZURE_BLOB_STORAGE_CONNECTION_STRING:
     try:
-        blob_service_client = BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING)
+        blob_service_client = BlobServiceClient.from_connection_string(AZURE_BLOB_STORAGE_CONNECTION_STRING)
         # Ensure container exists
-        container_client = blob_service_client.get_container_client(CONTAINER_NAME)
+        container_client = blob_service_client.get_container_client(AZURE_BLOB_STORAGE_CONTAINER_NAME)
         if not container_client.exists():
             container_client.create_container()
         logger.info("Azure Blob Storage client initialized successfully")
@@ -110,11 +119,14 @@ async def upload_to_blob_storage(blob_name: str, content: bytes, content_type: s
     if not blob_service_client:
         raise Exception("Azure Blob Storage not configured")
     
-    logger.info(f"Uploading to Azure Blob Storage: container={CONTAINER_NAME}, blob={blob_name}")
-    blob_client = blob_service_client.get_blob_client(container=CONTAINER_NAME, blob=blob_name)
-    blob_client.upload_blob(content, overwrite=True, content_settings=None if not content_type else 
-                           blob_client.get_blob_properties().content_settings)
-    result_path = f"azure://{CONTAINER_NAME}/{blob_name}"
+    logger.info(f"Uploading to Azure Blob Storage: container={AZURE_BLOB_STORAGE_CONTAINER_NAME}, blob={blob_name}")
+    blob_client = blob_service_client.get_blob_client(container=AZURE_BLOB_STORAGE_CONTAINER_NAME, blob=blob_name)
+    if not content_type:
+        content_settings = None
+    else:
+        content_settings = ContentSettings(content_type=content_type)
+    blob_client.upload_blob(content, overwrite=True, content_settings=content_settings)
+    result_path = f"azure://{AZURE_BLOB_STORAGE_CONTAINER_NAME}/{blob_name}"
     logger.info(f"Successfully uploaded to: {result_path}")
     return result_path
 
@@ -123,7 +135,7 @@ async def download_from_blob_storage(blob_name: str) -> bytes:
     if not blob_service_client:
         raise Exception("Azure Blob Storage not configured")
     
-    blob_client = blob_service_client.get_blob_client(container=CONTAINER_NAME, blob=blob_name)
+    blob_client = blob_service_client.get_blob_client(container=AZURE_BLOB_STORAGE_CONTAINER_NAME, blob=blob_name)
     download_stream = blob_client.download_blob()
     return download_stream.readall()
 
@@ -150,17 +162,22 @@ async def read_file_from_storage(file_path: str) -> bytes:
         # Azure Blob Storage
         return await download_from_blob_storage(file_path)
 
-def get_blob_name(client_slug: str, file_type: str, period_date: str = None, is_processed: bool = False) -> str:
+def get_blob_name(client_slug: str, file_type: str, period_date: str = None, is_extracted: bool = False, is_processed: bool = False) -> str:
     """Generate blob name for Azure Blob Storage"""
+    if is_extracted:
+        folder_type = "extracted"
+    elif is_processed:          
+        folder_type = "processed"
+    else:
+        folder_type = "raw"
+    
     if period_date:
-        folder_type = "processed" if is_processed else "raw"
         blob_name = f"{client_slug}/{folder_type}/{period_date}/{file_type}"
-        logger.info(f"Generated blob name: {blob_name} (client_slug: {client_slug}, file_type: {file_type}, period_date: {period_date}, is_processed: {is_processed})")
+        logger.info(f"Generated blob name: {blob_name} (client_slug: {client_slug}, file_type: {file_type}, period_date: {period_date}, is_extracted: {is_extracted}, is_processed: {is_processed})")
         return blob_name
     else:
-        folder_type = "processed" if is_processed else "raw"
         blob_name = f"{client_slug}/{folder_type}/{file_type}"
-        logger.info(f"Generated blob name: {blob_name} (client_slug: {client_slug}, file_type: {file_type}, is_processed: {is_processed})")
+        logger.info(f"Generated blob name: {blob_name} (client_slug: {client_slug}, file_type: {file_type}, is_extracted: {is_extracted}, is_processed: {is_processed})")
         return blob_name
 
 def create_client_structure(client_slug: str) -> dict:
@@ -169,23 +186,27 @@ def create_client_structure(client_slug: str) -> dict:
         # Local storage
         client_path = BASE_DIR / client_slug
         raw_path = client_path / "raw"
+        extracted_path = client_path / "extracted"
         processed_path = client_path / "processed"
         
         # Create directories
         raw_path.mkdir(parents=True, exist_ok=True)
+        extracted_path.mkdir(parents=True, exist_ok=True)
         processed_path.mkdir(parents=True, exist_ok=True)
         
         return {
             "client_path": str(client_path),
             "raw_path": str(raw_path),
+            "extracted_path": str(extracted_path),
             "processed_path": str(processed_path)
         }
     else:
         # Azure Blob Storage - virtual folders
         return {
-            "client_path": f"azure://{CONTAINER_NAME}/{client_slug}",
-            "raw_path": f"azure://{CONTAINER_NAME}/{client_slug}/raw",
-            "processed_path": f"azure://{CONTAINER_NAME}/{client_slug}/processed"
+            "client_path": f"azure://{AZURE_BLOB_STORAGE_CONTAINER_NAME}/{client_slug}",
+            "raw_path": f"azure://{AZURE_BLOB_STORAGE_CONTAINER_NAME}/{client_slug}/raw",
+            "extracted_path": f"azure://{AZURE_BLOB_STORAGE_CONTAINER_NAME}/{client_slug}/extracted",
+            "processed_path": f"azure://{AZURE_BLOB_STORAGE_CONTAINER_NAME}/{client_slug}/processed"
         }
 
 def create_period_structure(client_slug: str, period_date: str) -> dict:
@@ -194,38 +215,43 @@ def create_period_structure(client_slug: str, period_date: str) -> dict:
         # Local storage
         client_path = BASE_DIR / client_slug
         raw_period_path = client_path / "raw" / period_date
+        extracted_period_path = client_path / "extracted" / period_date
         processed_period_path = client_path / "processed" / period_date
         
         raw_period_path.mkdir(parents=True, exist_ok=True)
+        extracted_period_path.mkdir(parents=True, exist_ok=True)
         processed_period_path.mkdir(parents=True, exist_ok=True)
         
         return {
             "raw_period_path": str(raw_period_path),
+            "extracted_period_path": str(extracted_period_path),
             "processed_period_path": str(processed_period_path)
         }
     else:
         # Azure Blob Storage - virtual folders
         return {
-            "raw_period_path": f"azure://{CONTAINER_NAME}/{client_slug}/raw/{period_date}",
-            "processed_period_path": f"azure://{CONTAINER_NAME}/{client_slug}/processed/{period_date}"
+            "raw_period_path": f"azure://{AZURE_BLOB_STORAGE_CONTAINER_NAME}/{client_slug}/raw/{period_date}",
+            "extracted_period_path": f"azure://{AZURE_BLOB_STORAGE_CONTAINER_NAME}/{client_slug}/extracted/{period_date}",
+            "processed_period_path": f"azure://{AZURE_AI_FOUNDRY_CONNECTION}/{client_slug}/processed/{period_date}"
         }
 
 async def extract_tables_from_pdf(file_path: str) -> List[dict]:
     """Extract tables from PDF using Azure Document Intelligence"""
-    if not AZURE_ENDPOINT or not AZURE_KEY:
+    if not AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT or not AZURE_DOCUMENT_INTELLIGENCE_KEY:
         logger.warning("Azure credentials not configured, skipping PDF processing")
         return []
     
     try:
         client = DocumentAnalysisClient(
-            endpoint=AZURE_ENDPOINT, 
-            credential=AzureKeyCredential(AZURE_KEY)
+            endpoint=AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT, 
+            credential=AzureKeyCredential(AZURE_DOCUMENT_INTELLIGENCE_KEY),
+            logging_enable=False
         )
         
         # Handle both local files and Azure Blob Storage files
         if file_path.startswith("azure://"):
             # Download from Azure Blob Storage to temporary file
-            blob_name = file_path.replace(f"azure://{CONTAINER_NAME}/", "")
+            blob_name = file_path.replace(f"azure://{AZURE_BLOB_STORAGE_CONTAINER_NAME}/", "")
             content = await download_from_blob_storage(blob_name)
             
             with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
@@ -234,7 +260,7 @@ async def extract_tables_from_pdf(file_path: str) -> List[dict]:
             
             try:
                 with open(temp_file_path, "rb") as document:
-                    poller = client.begin_analyze_document("prebuilt-document", document.read())
+                    poller = client.begin_analyze_document("prebuilt-document", document.read(), logger=logger)
                     result = poller.result()
             finally:
                 # Clean up temporary file
@@ -242,22 +268,45 @@ async def extract_tables_from_pdf(file_path: str) -> List[dict]:
         else:
             # Local file
             with open(file_path, "rb") as document:
-                poller = client.begin_analyze_document("prebuilt-document", document.read())
+                poller = client.begin_analyze_document("prebuilt-document", document.read(), logger=logger)
                 result = poller.result()
         
         tables = []
         for table in result.tables:
-            table_data = []
-            for row in table.rows:
-                row_data = {}
-                for i, cell in enumerate(row.cells):
-                    if cell.content:
-                        row_data[f"column_{i}"] = cell.content
-                if row_data:
-                    table_data.append(row_data)
-            if table_data:
-                tables.append(table_data)
-        
+            temp_table = defaultdict(dict)
+            for cell in table.cells:
+                temp_table[cell.column_index][cell.row_index] = cell.content
+
+            # Get total size
+            num_rows = table.row_count
+            num_columns = table.column_count
+
+            # Reconstruct table
+            rows = []
+            for r in range(num_rows):
+                row = []
+                for c in range(num_columns):
+                    row.append(temp_table[r].get(c, ""))
+                rows.append(row)
+            
+            # Format output: use first row as keys
+            formatted_data = []
+            headers = rows[0]
+            normalized_headers = [re.sub(r'\W+', '', h).strip().lower() for h in headers]
+            for row in rows[1:]:
+                record = {}
+                for i, key in enumerate(normalized_headers):
+                    if i < len(row):
+                        record[key] = row[i]
+                    else:
+                        record[key] = ""
+                formatted_data.append(record)
+            
+            if formatted_data:
+                tables.append(formatted_data)
+            else:
+                logger.warning(f"No data extracted from table {table.id}")
+
         return tables
     except Exception as e:
         logger.error(f"Error extracting tables from PDF: {e}")
@@ -270,7 +319,7 @@ def extract_tables_from_excel(file_path: str) -> List[dict]:
         if file_path.startswith("azure://"):
             # Download from Azure Blob Storage to temporary file
             import asyncio
-            blob_name = file_path.replace(f"azure://{CONTAINER_NAME}/", "")
+            blob_name = file_path.replace(f"azure://{AZURE_BLOB_STORAGE_CONTAINER_NAME}/", "")
             content = asyncio.run(download_from_blob_storage(blob_name))
             
             with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as temp_file:
@@ -334,7 +383,7 @@ def extract_tables_from_csv(file_path: str) -> List[dict]:
         if file_path.startswith("azure://"):
             # Download from Azure Blob Storage to temporary file
             import asyncio
-            blob_name = file_path.replace(f"azure://{CONTAINER_NAME}/", "")
+            blob_name = file_path.replace(f"azure://{AZURE_BLOB_STORAGE_CONTAINER_NAME}/", "")
             content = asyncio.run(download_from_blob_storage(blob_name))
             
             with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as temp_file:
@@ -388,17 +437,16 @@ def determine_file_type(filename: str) -> str:
     elif 'dobavljaci' in filename_lower:
         return 'dobavljaci'
     else:
-        # Default to kupci if no clear indicator
-        return 'kupci'
+        raise Exception(f"Something went wrong with file type detection for {filename}")
 
 def get_desired_keys(file_type: str) -> List[str]:
     """Get desired mapping keys based on file type"""
     if file_type == 'kupci':
-        return ['konto', 'naziv_partnera', 'duguje', 'saldo']
+        return ['konto', 'naziv_partnera', 'promet duguje', 'saldo']
     elif file_type == 'dobavljaci':
-        return ['konto', 'naziv_partnera', 'potrazuje', 'saldo']
+        return ['konto', 'naziv_partnera', 'promet potrazuje', 'saldo']
     else:
-        return ['konto', 'naziv_partnera', 'duguje', 'potrazuje', 'saldo']
+        return []
 
 async def ai_column_mapping(tables: List[dict], filename: str) -> Dict[str, Any]:
     """
@@ -411,26 +459,31 @@ async def ai_column_mapping(tables: List[dict], filename: str) -> Dict[str, Any]
         logger.info(f"AI column mapping for file: {filename}, type: {file_type}, desired keys: {desired_keys}")
         
         # If OpenAI is not available, use fallback logic
-        if not openai_client:
-            return await fallback_column_mapping(tables, desired_keys, file_type)
+        if not ai_foundry_client:
+            return [] #await fallback_column_mapping(tables, desired_keys, file_type)
         
         # Prepare table headers for AI analysis
         table_headers = []
+        seen_headers = []
         for i, table in enumerate(tables):
             if table:
                 # Extract headers from first row
-                headers = list(table[0].keys()) if table else []
-                table_headers.append({
-                    "table_index": i,
-                    "headers": headers,
-                    "sample_data": table[:3] if table else []  # First 3 rows for context
-                })
+                headers = list(table[0].keys())
+                if headers not in seen_headers:
+                    seen_headers.append(headers)
+                    table_headers.append({
+                        "table_index": i,
+                        "headers": headers,
+                        "sample_data": table[:15] # First 15 rows for context
+                    })
+            else:
+                logger.warning(f"Table {i} is empty")
         
         # Create AI prompt for column mapping
         prompt = create_column_mapping_prompt(table_headers, desired_keys, file_type)
         
-        # Call Azure OpenAI
-        response = await call_azure_openai(prompt)
+        # Call Azure AI Foundry
+        response = await call_azure_ai_foundry(prompt)
         
         # Parse AI response
         column_mapping = parse_ai_response(response, desired_keys)
@@ -451,74 +504,78 @@ async def ai_column_mapping(tables: List[dict], filename: str) -> Dict[str, Any]
     except Exception as e:
         logger.error(f"Error in AI column mapping: {e}")
         # Fallback to basic mapping
-        return await fallback_column_mapping(tables, desired_keys, determine_file_type(filename))
+        return [] #await fallback_column_mapping(tables, desired_keys, determine_file_type(filename))
 
 def create_column_mapping_prompt(table_headers: List[dict], desired_keys: List[str], file_type: str) -> str:
     """Create prompt for AI column mapping"""
-    
-    prompt = f"""
-You are an expert data analyst specializing in financial document processing. You need to map table columns to standardized keys for {file_type} files.
-
-DESIRED MAPPING KEYS:
-{', '.join(desired_keys)}
-
-TABLES TO ANALYZE:
-"""
-    
+    prompt_tables = ""
     for table_info in table_headers:
-        prompt += f"\nTable {table_info['table_index']}:\n"
-        prompt += f"Headers: {', '.join(table_info['headers'])}\n"
+        prompt_tables += f"\nTable {table_info['table_index']}:\n"
+        prompt_tables += f"Headers: {', '.join(table_info['headers'])}\n"
         if table_info['sample_data']:
-            prompt += "Sample data (first 3 rows):\n"
+            prompt_tables += "Sample data (first 15 rows):\n"
             for i, row in enumerate(table_info['sample_data']):
-                prompt += f"Row {i+1}: {row}\n"
-        prompt += "\n"
-    
-    prompt += f"""
-INSTRUCTIONS:
-1. Analyze each table's headers and sample data
-2. Map the headers to the desired keys: {', '.join(desired_keys)}
-3. Consider semantic similarity, abbreviations, and common variations
-4. For each desired key, provide the most likely matching header
-5. If no good match is found, use null
-6. Consider the context: this is a {file_type} file
+                prompt_tables += f"Row {i+1}: {row}\n"
+        prompt_tables += "\n"
 
-RESPONSE FORMAT (JSON):
-{{
-    "table_mappings": [
+    prompt = f"""
+        You are an expert data analyst specializing in financial document processing. You need to map table columns to standardized keys for {file_type} files.
+
+        DESIRED MAPPING KEYS:
+        {', '.join(desired_keys)}
+
+        TABLES TO ANALYZE: {prompt_tables}
+            
+        INSTRUCTIONS:
+        1. Analyze each table's headers and sample data
+        2. Map the headers to the desired keys: {', '.join(desired_keys)}
+        3. Consider semantic similarity, abbreviations, and common variations
+        4. For each desired key, provide the most likely matching header
+        5. If no good match is found, use null
+        6. Consider the context: this is a {file_type} file
+
+        RESPONSE FORMAT (JSON):
         {{
-            "table_index": 0,
-            "mapping": {{
-                "{desired_keys[0]}": "matching_header_or_null",
-                "{desired_keys[1]}": "matching_header_or_null",
-                ...
-            }}
+            "table_mappings": [
+                {{
+                    "table_index": 0,
+                    "mapping": {{
+                        "{desired_keys[0]}": "matching_header_or_null",
+                        "{desired_keys[1]}": "matching_header_or_null",
+                        ...
+                    }}
+                }}
+            ]
         }}
-    ]
-}}
 
-Provide only the JSON response, no additional text.
-"""
+        Provide only the JSON response, no additional text.
+        """
     
     return prompt
 
-async def call_azure_openai(prompt: str) -> str:
-    """Call Azure OpenAI API"""
+async def call_azure_ai_foundry(prompt: str) -> str:
+    """Call Azure AI Foundry API"""
     try:
-        response = openai_client.chat.completions.create(
-            model="gpt-4",  # or your specific model name
+        response = ai_foundry_client.complete(
+            stream=True,
             messages=[
-                {"role": "system", "content": "You are a data mapping expert. Provide only JSON responses."},
-                {"role": "user", "content": prompt}
+                SystemMessage(content="You are a data mapping expert. Provide only JSON responses."),
+                UserMessage(content=prompt)
             ],
             temperature=0.1,
-            max_tokens=1000
+            max_tokens=4096,
+            model=AZURE_AI_FOUNDRY_MODEL
         )
+
+        return_response_string = ""
+        for update in response:
+            if update.choices:
+                return_response_string += update.choices[0].delta.content or ""
         
-        return response.choices[0].message.content.strip()
+        return return_response_string
         
     except Exception as e:
-        logger.error(f"Error calling Azure OpenAI: {e}")
+        logger.error(f"Error calling Azure AI Foundry: {e}")
         raise
 
 def parse_ai_response(response: str, desired_keys: List[str]) -> Dict[str, Any]:
@@ -549,7 +606,7 @@ def parse_ai_response(response: str, desired_keys: List[str]) -> Dict[str, Any]:
         logger.error(f"Error parsing AI response: {e}")
         return {}
 
-async def fallback_column_mapping(tables: List[dict], desired_keys: List[str], file_type: str) -> Dict[str, Any]:
+'''async def fallback_column_mapping(tables: List[dict], desired_keys: List[str], file_type: str) -> Dict[str, Any]:
     """Fallback column mapping when AI is not available"""
     logger.info("Using fallback column mapping")
     
@@ -658,7 +715,7 @@ def standardize_table_data(table_data: List[dict]) -> dict:
     return {
         "standardized_records": standardized_data,
         "total_records": len(standardized_data)
-    }
+    }'''
 
 def standardize_table_data_with_mapping(table_data: List[dict], mapping_result: Dict[str, Any]) -> dict:
     """Standardize table data using AI-generated column mapping"""
@@ -682,7 +739,7 @@ def standardize_table_data_with_mapping(table_data: List[dict], mapping_result: 
                     standardized_row[desired_key] = str(row[mapped_column])
                 else:
                     # Try to find a match using fallback logic
-                    for col_name, col_value in row.items():
+                    for _, col_value in row.items():
                         if any(keyword in str(col_value).lower() for keyword in [desired_key, desired_key.replace('_', '')]):
                             standardized_row[desired_key] = str(col_value)
                             break
@@ -703,6 +760,13 @@ def standardize_table_data_with_mapping(table_data: List[dict], mapping_result: 
         logger.error(f"Error in standardize_table_data_with_mapping: {e}")
         # Fallback to original standardization
         return standardize_table_data(table_data)
+
+def standardize_table_data(table_data: List[dict]) -> dict:
+    standardized_data = []
+    return {
+        "standardized_records": standardized_data,
+        "total_records": len(standardized_data)
+    }
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
@@ -728,7 +792,7 @@ async def create_client(client_name: str = Form(...)):
                 return {"message": "Client already exists", "client_slug": client_slug}
         else:
             # Check if client exists in Azure Blob Storage
-            container_client = blob_service_client.get_container_client(CONTAINER_NAME)
+            container_client = blob_service_client.get_container_client(AZURE_BLOB_STORAGE_CONTAINER_NAME)
             blobs = container_client.list_blobs(name_starts_with=f"{client_slug}/")
             if any(blob.name.startswith(f"{client_slug}/") for blob in blobs):
                 logger.info(f"Client already exists in Azure: {client_slug}")
@@ -977,6 +1041,24 @@ async def process_files(file_mappings: dict, period_structure: dict, period_name
             
             # Standardize data
             if tables:
+                # Save extracted data to storage
+                if USE_LOCAL_STORAGE:
+                    extracted_file_path = Path(period_structure["extracted_period_path"]) / f"{file_type}-extracted.json"
+                    async with aiofiles.open(extracted_file_path, 'w', encoding='utf-8') as f:
+                        await f.write(json.dumps(tables, indent=2, ensure_ascii=False))
+                    extracted_file_path_str = str(extracted_file_path)
+                else:
+                    # Azure Blob Storage
+                    extracted_blob_name = get_blob_name(
+                        client_slug=period_structure["extracted_period_path"].split('/')[3],  # Extract client_slug
+                        file_type=f"{file_type}-extracted.json",
+                        period_date=period_structure["extracted_period_path"].split('/')[-1],  # Extract period_date
+                        is_extracted=True
+                    )
+                    extracted_content = json.dumps(tables, indent=2, ensure_ascii=False).encode('utf-8')
+                    extracted_file_path_str = await upload_to_blob_storage(extracted_blob_name, extracted_content)
+                
+                # Standardize data
                 standardized_data = standardize_table_data(tables[0])  # Use first table
                 
                 # Save processed data to storage
@@ -1001,6 +1083,7 @@ async def process_files(file_mappings: dict, period_structure: dict, period_name
                     "file_type": file_type,
                     "original_filename": file.filename,
                     "raw_path": raw_file_path_str,
+                    "extracted_path": extracted_file_path_str,
                     "processed_path": processed_file_path_str,
                     "records_processed": standardized_data.get("total_records", 0)
                 })
@@ -1055,17 +1138,47 @@ async def process_files_with_content(file_mappings: dict, period_structure: dict
             
             # AI Column Mapping - NEW STEP
             if tables:
+                # Save extracted data to storage
+                if USE_LOCAL_STORAGE:
+                    extracted_file_path = Path(period_structure["extracted_period_path"]) / f"{file_type}-extracted.json"
+                    async with aiofiles.open(extracted_file_path, 'w', encoding='utf-8') as f:
+                        await f.write(json.dumps(tables, indent=2, ensure_ascii=False))
+                    extracted_file_path_str = str(extracted_file_path)
+                else:
+                    # Azure Blob Storage
+                    extracted_blob_name = get_blob_name(
+                        client_slug=period_structure["extracted_period_path"].split('/')[3],  # Extract client_slug
+                        file_type=f"{file_type}-extracted.json",
+                        period_date=period_structure["extracted_period_path"].split('/')[-1],  # Extract period_date
+                        is_extracted=True
+                    )
+                    extracted_content = json.dumps(tables, indent=2, ensure_ascii=False).encode('utf-8')
+                    extracted_file_path_str = await upload_to_blob_storage(extracted_blob_name, extracted_content)
+                
                 column_mapping_result = await ai_column_mapping(tables, file_obj.filename)
-                
-                # Save column mapping to storage
-                mapping_path = await save_column_mapping(
-                    column_mapping_result, 
-                    period_structure["raw_period_path"], 
-                    file_type
-                )
-                
+
+                if USE_LOCAL_STORAGE:
+                    #Local storage
+                    mapping_path = Path(period_structure["extracted_period_path"]) / f"{file_type}-mapping.json"
+                    async with aiofiles.open(mapping_path, 'w', encoding='utf-8') as f:
+                        await f.write(json.dumps(column_mapping_result, indent=2, ensure_ascii=False))
+                    column_mapping_path_str = str(mapping_path)
+                else:
+                    # Azure Blob Storage
+                    mapping_blob_name = get_blob_name(
+                        client_slug=period_structure["extracted_period_path"].split('/')[3],  # Extract client_slug
+                        file_type=f"{file_type}-mapping.json",
+                        period_date=period_structure["extracted_period_path"].split('/')[-1],  # Extract period_date
+                        is_extracted=True
+                    )
+                    column_mapping_content = json.dumps(column_mapping_result, indent=2, ensure_ascii=False).encode('utf-8')
+                    column_mapping_path_str = await upload_to_blob_storage(mapping_blob_name, column_mapping_content)
+    
                 # Standardize data using the mapping
-                standardized_data = standardize_table_data_with_mapping(tables[0], column_mapping_result)
+                standardized_data_list = {}
+                for i, table in enumerate(tables):
+                    standardized_data = standardize_table_data_with_mapping(table, column_mapping_result[i])
+                    standardized_data_list[i] = standardized_data
                 
                 # Save processed data to storage
                 if USE_LOCAL_STORAGE:
@@ -1089,7 +1202,8 @@ async def process_files_with_content(file_mappings: dict, period_structure: dict
                     "file_type": file_type,
                     "original_filename": file_obj.filename,
                     "raw_path": raw_file_path_str,
-                    "column_mapping_path": mapping_path,
+                    "extracted_path": extracted_file_path_str,
+                    "column_mapping_path": column_mapping_path_str,
                     "processed_path": processed_file_path_str,
                     "records_processed": standardized_data.get("total_records", 0),
                     "mapping_confidence": column_mapping_result.get("mapping_confidence", "unknown")
@@ -1159,15 +1273,15 @@ async def get_client_structure(client_slug: str):
             }
         else:
             # Check if client exists in Azure Blob Storage
-            container_client = blob_service_client.get_container_client(CONTAINER_NAME)
+            container_client = blob_service_client.get_container_client(AZURE_BLOB_STORAGE_CONTAINER_NAME)
             blobs = container_client.list_blobs(name_starts_with=f"{client_slug}/")
             if not any(blob.name.startswith(f"{client_slug}/") for blob in blobs):
                 raise HTTPException(status_code=404, detail="Client not found")
             
             structure = {
                 "client_slug": client_slug,
-                "raw_path": f"azure://{CONTAINER_NAME}/{client_slug}/raw",
-                "processed_path": f"azure://{CONTAINER_NAME}/{client_slug}/processed"
+                "raw_path": f"azure://{AZURE_BLOB_STORAGE_CONTAINER_NAME}/{client_slug}/raw",
+                "processed_path": f"azure://{AZURE_BLOB_STORAGE_CONTAINER_NAME}/{client_slug}/processed"
             }
         
         return structure
@@ -1177,4 +1291,4 @@ async def get_client_structure(client_slug: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000) 
+    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True) 
