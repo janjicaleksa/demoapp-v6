@@ -1,0 +1,25 @@
+You are given a table extracted from a financial document.  
+I will provide you with the following context variables:  
+
+- file_type: ("kupci" = customers, or "dobavljači" = suppliers)  
+- period_date: ("end_of_fiscal_year" or "current_year_balance")  
+- desired_headers: [list of headers for the standardized output table]  
+- is_ispravka_vrednosti_kupci: (True if the input file represents impairment of customers, False otherwise)  
+
+Your task is to:  
+1. Normalize and standardize the input table so that it strictly follows the structure of "desired_headers".  
+2. Keep all header names in Serbian exactly as given (do not translate them).  
+3. If a column required by "desired_headers" is missing, try to infer its value from the table context or leave it empty if impossible.  
+4. If "is_ispravka_vrednosti_kupci" = True, make sure the output table reflects that this is an impairment of customers (apply appropriate mapping).  
+5. Ensure the output is always returned as valid JSON with the following structure:  
+
+{
+  "table_id": "<unique table number or identifier>",
+  "standardized_table": [
+    {
+      "<header_1>": "...",
+      "<header_2>": "...",
+      ...
+    }
+  ]
+}

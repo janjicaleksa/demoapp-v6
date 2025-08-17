@@ -1,0 +1,24 @@
+# Easy Tables Environment Configuration
+
+# Application Settings
+DEBUG=false
+HOST=0.0.0.0
+PORT=8000
+
+# Azure Document Intelligence Configuration
+AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT=your_document_intelligence_endpoint
+AZURE_DOCUMENT_INTELLIGENCE_KEY=your_document_intelligence_key
+
+# Azure Blob Storage Configuration (optional)
+AZURE_BLOB_STORAGE_CONNECTION_STRING=your_blob_storage_connection_string
+AZURE_BLOB_STORAGE_CONTAINER_NAME=easy-tables
+
+# Azure AI Foundry Configuration for AI Processing
+AZURE_AI_FOUNDRY_CONNECTION=your_ai_foundry_endpoint
+AZURE_AI_FOUNDRY_KEY=your_ai_foundry_key
+AZURE_AI_FOUNDRY_MODEL=gpt-4
+
+# File Processing Settings
+MAX_FILE_SIZE=52428800  # 50MB in bytes
+LOG_LEVEL=INFO
+AZURE_LOG_LEVEL=ERROR
