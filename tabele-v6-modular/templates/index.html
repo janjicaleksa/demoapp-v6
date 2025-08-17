@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Processor Kupci Dobavljaci</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#3B82F6',
+                        secondary: '#1E40AF',
+                        accent: '#10B981'
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <!-- Header -->
+        <div class="text-center mb-8">
+            <h1 class="text-4xl font-bold text-gray-900 mb-2">AI Processor</h1>
+            <h2 class="text-2xl font-semibold text-primary mb-4">Kupci Dobavljaci</h2>
+            <p class="text-gray-600">Process and standardize financial documents</p>
+        </div>
+
+        <!-- Main Content -->
+        <div class="max-w-7xl mx-auto">
+            <!-- Step 1: Client Creation -->
+            <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+                <h3 class="text-xl font-semibold text-gray-900 mb-4">Step 1: Create Client</h3>
+                <form id="clientForm" class="space-y-4">
+                    <div>
+                        <label for="clientName" class="block text-sm font-medium text-gray-700 mb-2">Client Name</label>
+                        <input type="text" id="clientName" name="clientName" required
+                               class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+                               placeholder="Enter client name">
+                    </div>
+                    <button type="submit" 
+                            class="w-full bg-primary text-white py-2 px-4 rounded-md hover:bg-secondary transition-colors">
+                        Create Client
+                    </button>
+                </form>
+                <div id="clientResult" class="mt-4 hidden"></div>
+            </div>
+
+            <!-- Step 2: Two Period Structures -->
+            <div id="uploadSection" class="hidden">
+                <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+                    <h3 class="text-xl font-semibold text-gray-900 mb-4">Step 2: Set Periods and Upload Mode</h3>
+                    
+                    <!-- Upload Mode Selection -->
+                    <div class="mb-6">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Upload Mode</label>
+                        <div class="space-y-2">
+                            <label class="flex items-center">
+                                <input type="radio" name="uploadMode" value="fixed" checked
+                                       class="mr-2 text-primary focus:ring-primary">
+                                <span>Fixed Upload (Summary Reports)</span>
+                            </label>
+                            <label class="flex items-center">
+                                <input type="radio" name="uploadMode" value="unfixed"
+                                       class="mr-2 text-primary focus:ring-primary">
+                                <span>Unfixed Upload (Per Account) - Coming Soon</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Combined Upload Form -->
+                <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+                    <h3 class="text-xl font-semibold text-gray-900 mb-4">Process Both Periods Together</h3>
+                    <form id="combinedForm" class="space-y-6">
+                        <input type="hidden" id="clientSlugCombined" name="clientSlug">
+                        
+                        <!-- Period Dates -->
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div>
+                                <label for="period1Date" class="block text-sm font-medium text-gray-700 mb-2">Period 1 Date</label>
+                                <input type="date" id="period1Date" name="period1_date" required
+                                       class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                            </div>
+                            <div>
+                                <label for="period2Date" class="block text-sm font-medium text-gray-700 mb-2">Period 2 Date</label>
+                                <input type="date" id="period2Date" name="period2_date" required
+                                       class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                            </div>
+                        </div>
+
+                        <!-- Period 1 Files -->
+                        <div class="border-t pt-6">
+                            <h4 class="text-lg font-medium text-gray-900 mb-4 flex items-center">
+                                <span class="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm font-medium mr-3">Period 1</span>
+                                Required Files
+                            </h4>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">Kupci Prethodna Fiskalna Godina *</label>
+                                    <input type="file" name="kupci_prethodna_fiskalna_godina" accept=".xlsx,.csv,.doc,.docx,.pdf" required
+                                           class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">Dobavljaci Prethodna Fiskalna Godina *</label>
+                                    <input type="file" name="dobavljaci_prethodna_fiskalna_godina" accept=".xlsx,.csv,.doc,.docx,.pdf" required
+                                           class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                                </div>
+                            </div>
+                            <div class="mt-4">
+                                <label class="block text-sm font-medium text-gray-700 mb-2">Kupci Prethodna Fiskalna Godina IV (Optional)</label>
+                                <input type="file" name="kupci_prethodna_fiskalna_godina_iv" accept=".xlsx,.csv,.doc,.docx,.pdf"
+                                       class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                            </div>
+                        </div>
+
+                        <!-- Period 2 Files -->
+                        <div class="border-t pt-6">
+                            <h4 class="text-lg font-medium text-gray-900 mb-4 flex items-center">
+                                <span class="bg-green-100 text-green-800 px-3 py-1 rounded-full text-sm font-medium mr-3">Period 2</span>
+                                Required Files
+                            </h4>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">Kupci Bilans Preseka *</label>
+                                    <input type="file" name="kupci_bilans_preseka" accept=".xlsx,.csv,.doc,.docx,.pdf" required
+                                           class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">Dobavljaci Bilans Preseka *</label>
+                                    <input type="file" name="dobavljaci_bilans_preseka" accept=".xlsx,.csv,.doc,.docx,.pdf" required
+                                           class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                                </div>
+                            </div>
+                            <div class="mt-4">
+                                <label class="block text-sm font-medium text-gray-700 mb-2">Kupci Bilans Preseka IV (Optional)</label>
+                                <input type="file" name="kupci_bilans_preseka_iv" accept=".xlsx,.csv,.doc,.docx,.pdf"
+                                       class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                            </div>
+                        </div>
+
+                        <button type="submit" 
+                                class="w-full bg-accent text-white py-4 px-6 rounded-md hover:bg-green-700 transition-colors text-lg font-semibold">
+                            Process All Files
+                        </button>
+                    </form>
+                    <div id="combinedResult" class="mt-4 hidden"></div>
+                </div>
+
+                <!-- Individual Period Forms (Hidden by default) -->
+                <div id="individualForms" class="hidden">
+                    <!-- Two Period Structures -->
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <!-- First Period Structure -->
+                        <div class="bg-white rounded-lg shadow-md p-6">
+                            <h3 class="text-xl font-semibold text-gray-900 mb-4 flex items-center">
+                                <span class="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm font-medium mr-3">Period 1</span>
+                                First Period Structure
+                            </h3>
+                            
+                            <!-- Period 1 Date -->
+                            <div class="mb-6">
+                                <label for="period1DateIndividual" class="block text-sm font-medium text-gray-700 mb-2">Period 1 Date</label>
+                                <input type="date" id="period1DateIndividual" name="period1Date" required
+                                       class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                            </div>
+
+                            <!-- Fixed Upload Form for Period 1 -->
+                            <div id="fixedUploadForm1" class="space-y-4">
+                                <h4 class="text-lg font-medium text-gray-900 mb-4">Required Files - Period 1</h4>
+                                <form id="fixedForm1" class="space-y-4">
+                                    <input type="hidden" id="clientSlug1" name="clientSlug">
+                                    <input type="hidden" id="period1DateHidden" name="periodDate">
+                                    
+                                    <div class="space-y-4">
+                                        <div>
+                                            <label class="block text-sm font-medium text-gray-700 mb-2">Kupci Prethodna Fiskalna Godina *</label>
+                                            <input type="file" name="kupci_prethodna_fiskalna_godina" accept=".xlsx,.csv,.doc,.docx,.pdf" required
+                                                   class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                                        </div>
+                                        <div>
+                                            <label class="block text-sm font-medium text-gray-700 mb-2">Dobavljaci Prethodna Fiskalna Godina *</label>
+                                            <input type="file" name="dobavljaci_prethodna_fiskalna_godina" accept=".xlsx,.csv,.doc,.docx,.pdf" required
+                                                   class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                                        </div>
+                                    </div>
+
+                                    <div class="border-t pt-4">
+                                        <h5 class="text-md font-medium text-gray-900 mb-4">Optional Files - Period 1</h5>
+                                        <div class="space-y-4">
+                                            <div>
+                                                <label class="block text-sm font-medium text-gray-700 mb-2">Kupci Prethodna Fiskalna Godina IV</label>
+                                                <input type="file" name="kupci_prethodna_fiskalna_godina_iv" accept=".xlsx,.csv,.doc,.docx,.pdf"
+                                                       class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <button type="submit" 
+                                            class="w-full bg-accent text-white py-3 px-4 rounded-md hover:bg-green-700 transition-colors">
+                                        Process Period 1 Files
+                                    </button>
+                                </form>
+                                <div id="fixedResult1" class="mt-4 hidden"></div>
+                            </div>
+
+                            <!-- Unfixed Upload Form for Period 1 -->
+                            <div id="unfixedUploadForm1" class="space-y-4 hidden">
+                                <h4 class="text-lg font-medium text-gray-900 mb-4">Unfixed Upload - Period 1</h4>
+                                <p class="text-gray-600 mb-4">This functionality is coming soon. For now, files will be saved but not processed.</p>
+                                <form id="unfixedForm1" class="space-y-4">
+                                    <input type="hidden" id="clientSlugUnfixed1" name="clientSlug">
+                                    <input type="hidden" id="period1DateHiddenUnfixed" name="periodDate">
+                                    
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 mb-2">Upload Files</label>
+                                        <input type="file" name="files" multiple accept=".xlsx,.csv,.doc,.docx,.pdf" required
+                                               class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                                    </div>
+
+                                    <button type="submit" 
+                                            class="w-full bg-gray-500 text-white py-3 px-4 rounded-md hover:bg-gray-600 transition-colors">
+                                        Upload Period 1 Files (Not Processed Yet)
+                                    </button>
+                                </form>
+                                <div id="unfixedResult1" class="mt-4 hidden"></div>
+                            </div>
+                        </div>
+
+                        <!-- Second Period Structure -->
+                        <div class="bg-white rounded-lg shadow-md p-6">
+                            <h3 class="text-xl font-semibold text-gray-900 mb-4 flex items-center">
+                                <span class="bg-green-100 text-green-800 px-3 py-1 rounded-full text-sm font-medium mr-3">Period 2</span>
+                                Second Period Structure
+                            </h3>
+                            
+                            <!-- Period 2 Date -->
+                            <div class="mb-6">
+                                <label for="period2DateIndividual" class="block text-sm font-medium text-gray-700 mb-2">Period 2 Date</label>
+                                <input type="date" id="period2DateIndividual" name="period2Date" required
+                                       class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                            </div>
+
+                            <!-- Fixed Upload Form for Period 2 -->
+                            <div id="fixedUploadForm2" class="space-y-4">
+                                <h4 class="text-lg font-medium text-gray-900 mb-4">Required Files - Period 2</h4>
+                                <form id="fixedForm2" class="space-y-4">
+                                    <input type="hidden" id="clientSlug2" name="clientSlug">
+                                    <input type="hidden" id="period2DateHidden" name="periodDate">
+                                    
+                                    <div class="space-y-4">
+                                        <div>
+                                            <label class="block text-sm font-medium text-gray-700 mb-2">Kupci Bilans Preseka *</label>
+                                            <input type="file" name="kupci_bilans_preseka" accept=".xlsx,.csv,.doc,.docx,.pdf" required
+                                                   class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                                        </div>
+                                        <div>
+                                            <label class="block text-sm font-medium text-gray-700 mb-2">Dobavljaci Bilans Preseka *</label>
+                                            <input type="file" name="dobavljaci_bilans_preseka" accept=".xlsx,.csv,.doc,.docx,.pdf" required
+                                                   class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                                        </div>
+                                    </div>
+
+                                    <div class="border-t pt-4">
+                                        <h5 class="text-md font-medium text-gray-900 mb-4">Optional Files - Period 2</h5>
+                                        <div class="space-y-4">
+                                            <div>
+                                                <label class="block text-sm font-medium text-gray-700 mb-2">Kupci Bilans Preseka IV</label>
+                                                <input type="file" name="kupci_bilans_preseka_iv" accept=".xlsx,.csv,.doc,.docx,.pdf"
+                                                       class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <button type="submit" 
+                                            class="w-full bg-accent text-white py-3 px-4 rounded-md hover:bg-green-700 transition-colors">
+                                        Process Period 2 Files
+                                    </button>
+                                </form>
+                                <div id="fixedResult2" class="mt-4 hidden"></div>
+                            </div>
+
+                            <!-- Unfixed Upload Form for Period 2 -->
+                            <div id="unfixedUploadForm2" class="space-y-4 hidden">
+                                <h4 class="text-lg font-medium text-gray-900 mb-4">Unfixed Upload - Period 2</h4>
+                                <p class="text-gray-600 mb-4">This functionality is coming soon. For now, files will be saved but not processed.</p>
+                                <form id="unfixedForm2" class="space-y-4">
+                                    <input type="hidden" id="clientSlugUnfixed2" name="clientSlug">
+                                    <input type="hidden" id="period2DateHiddenUnfixed" name="periodDate">
+                                    
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 mb-2">Upload Files</label>
+                                        <input type="file" name="files" multiple accept=".xlsx,.csv,.doc,.docx,.pdf" required
+                                               class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                                    </div>
+
+                                    <button type="submit" 
+                                            class="w-full bg-gray-500 text-white py-3 px-4 rounded-md hover:bg-gray-600 transition-colors">
+                                        Upload Period 2 Files (Not Processed Yet)
+                                    </button>
+                                </form>
+                                <div id="unfixedResult2" class="mt-4 hidden"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Client creation
+        document.getElementById('clientForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData();
+            formData.append('client_name', document.getElementById('clientName').value);
+
+            try {
+                const response = await fetch('/api/clients', {
+                    method: 'POST',
+                    body: formData
+                });
+                const result = await response.json();
+
+                const resultDiv = document.getElementById('clientResult');
+                resultDiv.className = 'mt-4 p-4 rounded-md';
+                
+                if (response.ok) {
+                    resultDiv.className += ' bg-green-100 text-green-800';
+                    resultDiv.innerHTML = `
+                        <p><strong>Success:</strong> ${result.message}</p>
+                        <p><strong>Client Slug:</strong> ${result.client_slug}</p>
+                    `;
+                    
+                    // Store client slug for both periods and show upload section
+                    document.getElementById('clientSlug1').value = result.client_slug;
+                    document.getElementById('clientSlug2').value = result.client_slug;
+                    document.getElementById('clientSlugUnfixed1').value = result.client_slug;
+                    document.getElementById('clientSlugUnfixed2').value = result.client_slug;
+                    document.getElementById('clientSlugCombined').value = result.client_slug;
+                    document.getElementById('uploadSection').classList.remove('hidden');
+                } else {
+                    resultDiv.className += ' bg-red-100 text-red-800';
+                    resultDiv.innerHTML = `<p><strong>Error:</strong> ${result.detail}</p>`;
+                }
+                resultDiv.classList.remove('hidden');
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        });
+
+        // Upload mode selection
+        document.querySelectorAll('input[name="uploadMode"]').forEach(radio => {
+            radio.addEventListener('change', (e) => {
+                if (e.target.value === 'fixed') {
+                    document.getElementById('fixedUploadForm1').classList.remove('hidden');
+                    document.getElementById('fixedUploadForm2').classList.remove('hidden');
+                    document.getElementById('unfixedUploadForm1').classList.add('hidden');
+                    document.getElementById('unfixedUploadForm2').classList.add('hidden');
+                } else {
+                    document.getElementById('fixedUploadForm1').classList.add('hidden');
+                    document.getElementById('fixedUploadForm2').classList.add('hidden');
+                    document.getElementById('unfixedUploadForm1').classList.remove('hidden');
+                    document.getElementById('unfixedUploadForm2').classList.remove('hidden');
+                }
+            });
+        });
+
+        // Period date sync for Period 1
+        document.getElementById('period1Date').addEventListener('change', (e) => {
+            document.getElementById('period1DateHidden').value = e.target.value;
+            document.getElementById('period1DateHiddenUnfixed').value = e.target.value;
+        });
+
+        // Period date sync for Period 2
+        document.getElementById('period2Date').addEventListener('change', (e) => {
+            document.getElementById('period2DateHidden').value = e.target.value;
+            document.getElementById('period2DateHiddenUnfixed').value = e.target.value;
+        });
+
+        // Combined form submission
+        document.getElementById('combinedForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            formData.append('client_slug', document.getElementById('clientSlugCombined').value);
+
+            try {
+                const response = await fetch('/api/upload/fixed', {
+                    method: 'POST',
+                    body: formData
+                });
+                const result = await response.json();
+
+                const resultDiv = document.getElementById('combinedResult');
+                resultDiv.className = 'mt-4 p-4 rounded-md';
+                
+                if (response.ok) {
+                    resultDiv.className += ' bg-green-100 text-green-800';
+                    let html = `<p><strong>Success:</strong> ${result.message}</p>`;
+                    if (result.period1_date) {
+                        html += `<p><strong>Period 1:</strong> ${result.period1_date}</p>`;
+                    }
+                    if (result.period2_date) {
+                        html += `<p><strong>Period 2:</strong> ${result.period2_date}</p>`;
+                    }
+                    html += '<h4 class="font-semibold mt-2">Processed Files:</h4><ul class="list-disc list-inside">';
+                    result.results.forEach(file => {
+                        html += `<li><strong>${file.period}:</strong> ${file.file_type}: ${file.records_processed} records processed</li>`;
+                    });
+                    html += '</ul>';
+                    resultDiv.innerHTML = html;
+                } else {
+                    resultDiv.className += ' bg-red-100 text-red-800';
+                    resultDiv.innerHTML = `<p><strong>Error:</strong> ${result.detail}</p>`;
+                }
+                resultDiv.classList.remove('hidden');
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        });
+
+        // Fixed upload form for Period 1
+        document.getElementById('fixedForm1').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            formData.append('client_slug', document.getElementById('clientSlug1').value);
+            formData.append('period_date', document.getElementById('period1Date').value);
+
+            try {
+                const response = await fetch('/api/upload/fixed/single', {
+                    method: 'POST',
+                    body: formData
+                });
+                const result = await response.json();
+
+                const resultDiv = document.getElementById('fixedResult1');
+                resultDiv.className = 'mt-4 p-4 rounded-md';
+                
+                if (response.ok) {
+                    resultDiv.className += ' bg-green-100 text-green-800';
+                    let html = `<p><strong>Success:</strong> ${result.message}</p>`;
+                    html += `<p><strong>Period:</strong> ${result.period_date}</p>`;
+                    html += '<h4 class="font-semibold mt-2">Processed Files:</h4><ul class="list-disc list-inside">';
+                    result.results.forEach(file => {
+                        html += `<li>${file.file_type}: ${file.records_processed} records processed</li>`;
+                    });
+                    html += '</ul>';
+                    resultDiv.innerHTML = html;
+                } else {
+                    resultDiv.className += ' bg-red-100 text-red-800';
+                    resultDiv.innerHTML = `<p><strong>Error:</strong> ${result.detail}</p>`;
+                }
+                resultDiv.classList.remove('hidden');
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        });
+
+        // Fixed upload form for Period 2
+        document.getElementById('fixedForm2').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            formData.append('client_slug', document.getElementById('clientSlug2').value);
+            formData.append('period_date', document.getElementById('period2Date').value);
+
+            try {
+                const response = await fetch('/api/upload/fixed/single', {
+                    method: 'POST',
+                    body: formData
+                });
+                const result = await response.json();
+
+                const resultDiv = document.getElementById('fixedResult2');
+                resultDiv.className = 'mt-4 p-4 rounded-md';
+                
+                if (response.ok) {
+                    resultDiv.className += ' bg-green-100 text-green-800';
+                    let html = `<p><strong>Success:</strong> ${result.message}</p>`;
+                    html += `<p><strong>Period:</strong> ${result.period_date}</p>`;
+                    html += '<h4 class="font-semibold mt-2">Processed Files:</h4><ul class="list-disc list-inside">';
+                    result.results.forEach(file => {
+                        html += `<li>${file.file_type}: ${file.records_processed} records processed</li>`;
+                    });
+                    html += '</ul>';
+                    resultDiv.innerHTML = html;
+                } else {
+                    resultDiv.className += ' bg-red-100 text-red-800';
+                    resultDiv.innerHTML = `<p><strong>Error:</strong> ${result.detail}</p>`;
+                }
+                resultDiv.classList.remove('hidden');
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        });
+
+        // Unfixed upload form for Period 1
+        document.getElementById('unfixedForm1').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData();
+            formData.append('client_slug', document.getElementById('clientSlugUnfixed1').value);
+            formData.append('period_date', document.getElementById('period1Date').value);
+            
+            const fileInput = e.target.querySelector('input[type="file"]');
+            for (let file of fileInput.files) {
+                formData.append('files', file);
+            }
+
+            try {
+                const response = await fetch('/api/upload/unfixed', {
+                    method: 'POST',
+                    body: formData
+                });
+                const result = await response.json();
+
+                const resultDiv = document.getElementById('unfixedResult1');
+                resultDiv.className = 'mt-4 p-4 rounded-md';
+                
+                if (response.ok) {
+                    resultDiv.className += ' bg-blue-100 text-blue-800';
+                    let html = `<p><strong>Info:</strong> ${result.message}</p>`;
+                    html += `<p><strong>Period:</strong> ${result.period_date}</p>`;
+                    html += '<h4 class="font-semibold mt-2">Uploaded Files:</h4><ul class="list-disc list-inside">';
+                    result.results.forEach(file => {
+                        html += `<li>${file.filename}: ${file.status}</li>`;
+                    });
+                    html += '</ul>';
+                    resultDiv.innerHTML = html;
+                } else {
+                    resultDiv.className += ' bg-red-100 text-red-800';
+                    resultDiv.innerHTML = `<p><strong>Error:</strong> ${result.detail}</p>`;
+                }
+                resultDiv.classList.remove('hidden');
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        });
+
+        // Unfixed upload form for Period 2
+        document.getElementById('unfixedForm2').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData();
+            formData.append('client_slug', document.getElementById('clientSlugUnfixed2').value);
+            formData.append('period_date', document.getElementById('period2Date').value);
+            
+            const fileInput = e.target.querySelector('input[type="file"]');
+            for (let file of fileInput.files) {
+                formData.append('files', file);
+            }
+
+            try {
+                const response = await fetch('/api/upload/unfixed', {
+                    method: 'POST',
+                    body: formData
+                });
+                const result = await response.json();
+
+                const resultDiv = document.getElementById('unfixedResult2');
+                resultDiv.className = 'mt-4 p-4 rounded-md';
+                
+                if (response.ok) {
+                    resultDiv.className += ' bg-blue-100 text-blue-800';
+                    let html = `<p><strong>Info:</strong> ${result.message}</p>`;
+                    html += `<p><strong>Period:</strong> ${result.period_date}</p>`;
+                    html += '<h4 class="font-semibold mt-2">Uploaded Files:</h4><ul class="list-disc list-inside">';
+                    result.results.forEach(file => {
+                        html += `<li>${file.filename}: ${file.status}</li>`;
+                    });
+                    html += '</ul>';
+                    resultDiv.innerHTML = html;
+                } else {
+                    resultDiv.className += ' bg-red-100 text-red-800';
+                    resultDiv.innerHTML = `<p><strong>Error:</strong> ${result.detail}</p>`;
+                }
+                resultDiv.classList.remove('hidden');
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        });
+    </script>
+</body>
+</html>

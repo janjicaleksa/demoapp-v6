@@ -1,0 +1,21 @@
+# Azure Document Intelligence
+AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT=your_azure_endpoint_here
+AZURE_DOCUMENT_INTELLIGENCE_KEY=your_azure_key_here
+
+# Azure Blob Storage
+AZURE_BLOB_STORAGE_CONNECTION_STRING=your_connection_string_here
+AZURE_BLOB_STORAGE_CONTAINER_NAME=documents
+
+# Azure AI Foundry (for AI column mapping)
+AZURE_AI_FOUNDRY_CONNECTION=your_azure_ai_foundry_endpoint_here
+AZURE_AI_FOUNDRY_KEY=your_azure_ai_foundry_key_here
+AZURE_AI_FOUNDRY_MODEL=gpt-4
+
+# Application Configuration
+DEBUG=False
+HOST=0.0.0.0
+PORT=8000
+LOG_LEVEL=INFO
+
+# CORS Settings (restrict in production)
+CORS_ORIGINS=["http://localhost:3000", "http://localhost:8000"]
