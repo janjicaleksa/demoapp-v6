@@ -1,0 +1,86 @@
+// ---------------------- JSON listing & download helpers ----------------------
+async function fetchJsonList(clientName) {
+  const resp = await fetch(`/list-json/${encodeURIComponent(clientName)}`);
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+    throw err;
+  }
+  return resp.json();
+}
+
+// encode path while preserving slashes for FastAPI path param
+function encodePathPreserveSlashes(path) {
+  return path.split('/').map(encodeURIComponent).join('/');
+}
+
+function buildDownloadUrl(clientName, relativePath) {
+  const encodedPath = encodePathPreserveSlashes(relativePath);
+  return `/download-json/${encodeURIComponent(clientName)}/${encodedPath}`;
+}
+
+async function refreshJsonList() {
+  const clientInput = document.getElementById('jsonClientInput');
+  // fallback to the client slug hidden field if input is empty
+  const fallbackSlug = document.getElementById('clientSlugCombined')?.value || document.getElementById('clientSlug1')?.value;
+  const clientName = (clientInput.value || fallbackSlug || '').trim();
+
+  if (!clientName) {
+    alert('Please enter a client slug first.');
+    return;
+  }
+
+  // show panel (in case it was hidden)
+  document.getElementById('jsonSection').classList.remove('hidden');
+  const container = document.getElementById('jsonListContainer');
+  container.innerHTML = `<p class="text-gray-500">Loading...</p>`;
+
+  try {
+    const files = await fetchJsonList(clientName);
+
+    if (!files || files.length === 0) {
+      container.innerHTML = `<p class="text-gray-500">No JSON files found for "<strong>${clientName}</strong>".</p>`;
+      return;
+    }
+
+    container.innerHTML = '';
+    files.forEach(file => {
+      // file: { filename, relative_path }
+      const row = document.createElement('div');
+      row.className = 'flex items-center justify-between p-2 border rounded-md';
+
+      const left = document.createElement('div');
+      left.className = 'truncate';
+      const link = document.createElement('a');
+      link.href = buildDownloadUrl(clientName, file.relative_path);
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.innerText = file.relative_path;
+      link.className = 'underline hover:text-primary';
+      left.appendChild(link);
+
+      const right = document.createElement('div');
+      right.className = 'flex gap-2';
+      const downloadBtn = document.createElement('a');
+      downloadBtn.href = link.href;
+      downloadBtn.className = 'bg-primary text-white px-3 py-1 rounded-md text-sm';
+      downloadBtn.innerText = 'Download';
+      downloadBtn.target = '_blank';
+      downloadBtn.rel = 'noopener noreferrer';
+
+      right.appendChild(downloadBtn);
+
+      row.appendChild(left);
+      row.appendChild(right);
+      container.appendChild(row);
+    });
+
+  } catch (err) {
+    console.error('list-json error', err);
+    const errMsg = err?.detail || err?.error || JSON.stringify(err);
+    container.innerHTML = `<p class="text-red-600">Error fetching files: ${errMsg}</p>`;
+  }
+}
+
+document.getElementById('listJsonBtn').addEventListener('click', refreshJsonList);
+document.getElementById('refreshJsonBtn').addEventListener('click', refreshJsonList);
+// -----------------------------------------------------------------------------
