@@ -1,0 +1,405 @@
+<script>
+    let currentClientSlug = '';
+
+    // Function to load and display files
+    async function loadClientFiles(clientSlug) {
+        try {
+            const response = await fetch(`/api/clients/${clientSlug}/files`);
+            const result = await response.json();
+            
+            const filesList = document.getElementById('filesList');
+            filesList.innerHTML = '';
+            
+            if (result.files && result.files.length > 0) {
+                // Group files by period and stage
+                const groupedFiles = {};
+                result.files.forEach(file => {
+                    const key = `${file.period_date}-${file.stage}`;
+                    if (!groupedFiles[key]) {
+                        groupedFiles[key] = [];
+                    }
+                    groupedFiles[key].push(file);
+                });
+                
+                // Create organized display
+                Object.keys(groupedFiles).sort().forEach(key => {
+                    const [period, stage] = key.split('-');
+                    const files = groupedFiles[key];
+                    
+                    const periodDiv = document.createElement('div');
+                    periodDiv.className = 'border rounded-lg p-4 bg-gray-50';
+                    
+                    const stageColors = {
+                        'raw': 'bg-blue-100 text-blue-800',
+                        'extracted': 'bg-yellow-100 text-yellow-800', 
+                        'processed': 'bg-green-100 text-green-800'
+                    };
+                    
+                    periodDiv.innerHTML = `
+                        <h4 class="font-semibold text-lg mb-3">
+                            Period: ${period} 
+                            <span class="ml-2 px-2 py-1 rounded-full text-sm ${stageColors[stage]}">${stage.toUpperCase()}</span>
+                        </h4>
+                        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                            ${files.map(file => `
+                                <div class="bg-white p-3 rounded border">
+                                    <p class="font-medium text-gray-900">${file.file_type}</p>
+                                    <p class="text-sm text-gray-600">${file.filename}</p>
+                                    <p class="text-xs text-gray-500">${formatFileSize(file.size)}</p>
+                                    <button onclick="downloadFile('${file.download_url}', '${file.filename}')" 
+                                            class="mt-2 w-full bg-primary text-white py-1 px-2 rounded text-sm hover:bg-secondary transition-colors">
+                                        Download
+                                    </button>
+                                </div>
+                            `).join('')}
+                        </div>
+                    `;
+                    
+                    filesList.appendChild(periodDiv);
+                });
+                
+                // Show download section and scroll to it
+                const downloadSection = document.getElementById('downloadSection');
+                downloadSection.classList.remove('hidden');
+                downloadSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            } else {
+                filesList.innerHTML = '<p class="text-gray-600">No processed files found for this client.</p>';
+                // Still show the section even if no files
+                document.getElementById('downloadSection').classList.remove('hidden');
+            }
+            
+        } catch (error) {
+            console.error('Error loading files:', error);
+            const filesList = document.getElementById('filesList');
+            filesList.innerHTML = '<p class="text-red-600">Error loading files. Please try again.</p>';
+        }
+    }
+
+    // Function to format file size
+    function formatFileSize(bytes) {
+        if (bytes === 0) return '0 Bytes';
+        const k = 1024;
+        const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    }
+
+    // Function to download file
+    function downloadFile(downloadUrl, filename) {
+        const link = document.createElement('a');
+        link.href = downloadUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    }
+
+    // Client creation
+    document.getElementById('clientForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const formData = new FormData();
+        formData.append('client_name', document.getElementById('clientName').value);
+
+        try {
+            const response = await fetch('/api/clients', {
+                method: 'POST',
+                body: formData
+            });
+            const result = await response.json();
+
+            const resultDiv = document.getElementById('clientResult');
+            resultDiv.className = 'mt-4 p-4 rounded-md';
+            
+            if (response.ok) {
+                resultDiv.className += ' bg-green-100 text-green-800';
+                resultDiv.innerHTML = `
+                    <p><strong>Success:</strong> ${result.message}</p>
+                    <p><strong>Client Slug:</strong> ${result.client_slug}</p>
+                `;
+                
+                // Store client slug for both periods and show upload section
+                currentClientSlug = result.client_slug;
+                document.getElementById('clientSlug1').value = result.client_slug;
+                document.getElementById('clientSlug2').value = result.client_slug;
+                document.getElementById('clientSlugUnfixed1').value = result.client_slug;
+                document.getElementById('clientSlugUnfixed2').value = result.client_slug;
+                document.getElementById('clientSlugCombined').value = result.client_slug;
+                document.getElementById('uploadSection').classList.remove('hidden');
+                
+                // DON'T load files here - only after processing
+                // loadClientFiles(result.client_slug);
+            } else {
+                resultDiv.className += ' bg-red-100 text-red-800';
+                resultDiv.innerHTML = `<p><strong>Error:</strong> ${result.detail}</p>`;
+            }
+            resultDiv.classList.remove('hidden');
+        } catch (error) {
+            console.error('Error:', error);
+        }
+    });
+
+    // Upload mode selection
+    document.querySelectorAll('input[name="uploadMode"]').forEach(radio => {
+        radio.addEventListener('change', (e) => {
+            if (e.target.value === 'fixed') {
+                document.getElementById('fixedUploadForm1').classList.remove('hidden');
+                document.getElementById('fixedUploadForm2').classList.remove('hidden');
+                document.getElementById('unfixedUploadForm1').classList.add('hidden');
+                document.getElementById('unfixedUploadForm2').classList.add('hidden');
+            } else {
+                document.getElementById('fixedUploadForm1').classList.add('hidden');
+                document.getElementById('fixedUploadForm2').classList.add('hidden');
+                document.getElementById('unfixedUploadForm1').classList.remove('hidden');
+                document.getElementById('unfixedUploadForm2').classList.remove('hidden');
+            }
+        });
+    });
+
+    // Period date sync for Period 1
+    document.getElementById('period1Date').addEventListener('change', (e) => {
+        document.getElementById('period1DateHidden').value = e.target.value;
+        document.getElementById('period1DateHiddenUnfixed').value = e.target.value;
+    });
+
+    // Period date sync for Period 2
+    document.getElementById('period2Date').addEventListener('change', (e) => {
+        document.getElementById('period2DateHidden').value = e.target.value;
+        document.getElementById('period2DateHiddenUnfixed').value = e.target.value;
+    });
+
+    // Combined form submission - MAIN PROCESSING
+    document.getElementById('combinedForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const formData = new FormData(e.target);
+        formData.append('client_slug', document.getElementById('clientSlugCombined').value);
+
+        // Show processing indicator
+        const submitButton = e.target.querySelector('button[type="submit"]');
+        const originalText = submitButton.textContent;
+        submitButton.textContent = 'Processing Files...';
+        submitButton.disabled = true;
+
+        try {
+            const response = await fetch('/api/upload/fixed', {
+                method: 'POST',
+                body: formData
+            });
+            const result = await response.json();
+
+            const resultDiv = document.getElementById('combinedResult');
+            resultDiv.className = 'mt-4 p-4 rounded-md';
+            
+            if (response.ok) {
+                resultDiv.className += ' bg-green-100 text-green-800';
+                let html = `<p><strong>Success:</strong> ${result.message}</p>`;
+                if (result.period1_date) {
+                    html += `<p><strong>Period 1:</strong> ${result.period1_date}</p>`;
+                }
+                if (result.period2_date) {
+                    html += `<p><strong>Period 2:</strong> ${result.period2_date}</p>`;
+                }
+                html += '<h4 class="font-semibold mt-2">Processed Files:</h4><ul class="list-disc list-inside">';
+                result.results.forEach(file => {
+                    html += `<li><strong>${file.period}:</strong> ${file.file_type}</li>`;
+                });
+                html += '</ul>';
+                resultDiv.innerHTML = html;
+                
+                // Load and show download section AFTER successful processing
+                if (currentClientSlug) {
+                    setTimeout(() => {
+                        loadClientFiles(currentClientSlug);
+                    }, 1500); // Small delay to ensure files are saved
+                }
+            } else {
+                resultDiv.className += ' bg-red-100 text-red-800';
+                resultDiv.innerHTML = `<p><strong>Error:</strong> ${result.detail}</p>`;
+            }
+            resultDiv.classList.remove('hidden');
+        } catch (error) {
+            console.error('Error:', error);
+            const resultDiv = document.getElementById('combinedResult');
+            resultDiv.className = 'mt-4 p-4 rounded-md bg-red-100 text-red-800';
+            resultDiv.innerHTML = '<p><strong>Error:</strong> Network error occurred. Please try again.</p>';
+            resultDiv.classList.remove('hidden');
+        } finally {
+            // Reset button
+            submitButton.textContent = originalText;
+            submitButton.disabled = false;
+        }
+    });
+
+    // Refresh files button
+    document.getElementById('refreshFiles').addEventListener('click', () => {
+        if (currentClientSlug) {
+            loadClientFiles(currentClientSlug);
+        }
+    });
+
+    // Fixed upload form for Period 1
+    document.getElementById('fixedForm1').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const formData = new FormData(e.target);
+        formData.append('client_slug', document.getElementById('clientSlug1').value);
+        formData.append('period_date', document.getElementById('period1Date').value);
+
+        try {
+            const response = await fetch('/api/upload/fixed/single', {
+                method: 'POST',
+                body: formData
+            });
+            const result = await response.json();
+
+            const resultDiv = document.getElementById('fixedResult1');
+            resultDiv.className = 'mt-4 p-4 rounded-md';
+            
+            if (response.ok) {
+                resultDiv.className += ' bg-green-100 text-green-800';
+                let html = `<p><strong>Success:</strong> ${result.message}</p>`;
+                html += `<p><strong>Period:</strong> ${result.period_date}</p>`;
+                html += '<h4 class="font-semibold mt-2">Processed Files:</h4><ul class="list-disc list-inside">';
+                result.results.forEach(file => {
+                    html += `<li>${file.file_type}</li>`;
+                });
+                html += '</ul>';
+                resultDiv.innerHTML = html;
+
+                // Load files after individual period processing
+                if (currentClientSlug) {
+                    setTimeout(() => loadClientFiles(currentClientSlug), 1000);
+                }
+            } else {
+                resultDiv.className += ' bg-red-100 text-red-800';
+                resultDiv.innerHTML = `<p><strong>Error:</strong> ${result.detail}</p>`;
+            }
+            resultDiv.classList.remove('hidden');
+        } catch (error) {
+            console.error('Error:', error);
+        }
+    });
+
+    // Fixed upload form for Period 2
+    document.getElementById('fixedForm2').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const formData = new FormData(e.target);
+        formData.append('client_slug', document.getElementById('clientSlug2').value);
+        formData.append('period_date', document.getElementById('period2Date').value);
+
+        try {
+            const response = await fetch('/api/upload/fixed/single', {
+                method: 'POST',
+                body: formData
+            });
+            const result = await response.json();
+
+            const resultDiv = document.getElementById('fixedResult2');
+            resultDiv.className = 'mt-4 p-4 rounded-md';
+            
+            if (response.ok) {
+                resultDiv.className += ' bg-green-100 text-green-800';
+                let html = `<p><strong>Success:</strong> ${result.message}</p>`;
+                html += `<p><strong>Period:</strong> ${result.period_date}</p>`;
+                html += '<h4 class="font-semibold mt-2">Processed Files:</h4><ul class="list-disc list-inside">';
+                result.results.forEach(file => {
+                    html += `<li>${file.file_type}</li>`;
+                });
+                html += '</ul>';
+                resultDiv.innerHTML = html;
+
+                // Load files after individual period processing
+                if (currentClientSlug) {
+                    setTimeout(() => loadClientFiles(currentClientSlug), 1000);
+                }
+            } else {
+                resultDiv.className += ' bg-red-100 text-red-800';
+                resultDiv.innerHTML = `<p><strong>Error:</strong> ${result.detail}</p>`;
+            }
+            resultDiv.classList.remove('hidden');
+        } catch (error) {
+            console.error('Error:', error);
+        }
+    });
+
+    // Unfixed upload forms remain the same...
+    document.getElementById('unfixedForm1').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const formData = new FormData();
+        formData.append('client_slug', document.getElementById('clientSlugUnfixed1').value);
+        formData.append('period_date', document.getElementById('period1Date').value);
+        
+        const fileInput = e.target.querySelector('input[type="file"]');
+        for (let file of fileInput.files) {
+            formData.append('files', file);
+        }
+
+        try {
+            const response = await fetch('/api/upload/unfixed', {
+                method: 'POST',
+                body: formData
+            });
+            const result = await response.json();
+
+            const resultDiv = document.getElementById('unfixedResult1');
+            resultDiv.className = 'mt-4 p-4 rounded-md';
+            
+            if (response.ok) {
+                resultDiv.className += ' bg-blue-100 text-blue-800';
+                let html = `<p><strong>Info:</strong> ${result.message}</p>`;
+                html += `<p><strong>Period:</strong> ${result.period_date}</p>`;
+                html += '<h4 class="font-semibold mt-2">Uploaded Files:</h4><ul class="list-disc list-inside">';
+                result.results.forEach(file => {
+                    html += `<li>${file.filename}: ${file.status}</li>`;
+                });
+                html += '</ul>';
+                resultDiv.innerHTML = html;
+            } else {
+                resultDiv.className += ' bg-red-100 text-red-800';
+                resultDiv.innerHTML = `<p><strong>Error:</strong> ${result.detail}</p>`;
+            }
+            resultDiv.classList.remove('hidden');
+        } catch (error) {
+            console.error('Error:', error);
+        }
+    });
+
+    document.getElementById('unfixedForm2').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const formData = new FormData();
+        formData.append('client_slug', document.getElementById('clientSlugUnfixed2').value);
+        formData.append('period_date', document.getElementById('period2Date').value);
+        
+        const fileInput = e.target.querySelector('input[type="file"]');
+        for (let file of fileInput.files) {
+            formData.append('files', file);
+        }
+
+        try {
+            const response = await fetch('/api/upload/unfixed', {
+                method: 'POST',
+                body: formData
+            });
+            const result = await response.json();
+
+            const resultDiv = document.getElementById('unfixedResult2');
+            resultDiv.className = 'mt-4 p-4 rounded-md';
+            
+            if (response.ok) {
+                resultDiv.className += ' bg-blue-100 text-blue-800';
+                let html = `<p><strong>Info:</strong> ${result.message}</p>`;
+                html += `<p><strong>Period:</strong> ${result.period_date}</p>`;
+                html += '<h4 class="font-semibold mt-2">Uploaded Files:</h4><ul class="list-disc list-inside">';
+                result.results.forEach(file => {
+                    html += `<li>${file.filename}: ${file.status}</li>`;
+                });
+                html += '</ul>';
+                resultDiv.innerHTML = html;
+            } else {
+                resultDiv.className += ' bg-red-100 text-red-800';
+                resultDiv.innerHTML = `<p><strong>Error:</strong> ${result.detail}</p>`;
+            }
+            resultDiv.classList.remove('hidden');
+        } catch (error) {
+            console.error('Error:', error);
+        }
+    });
+</script>
