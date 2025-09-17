@@ -1,0 +1,141 @@
+# main_download_additions.py
+# This file contains the code additions needed for main.py
+
+# Add this import to the existing imports at the top of main.py
+from fastapi.responses import FileResponse, BackgroundTask
+import urllib.parse
+
+# Add these new endpoints before the existing @app.get("/") endpoint
+
+@app.get("/api/download/{client_slug}/{period_date}/{file_type}/{stage}")
+async def download_file(
+    client_slug: str,
+    period_date: str, 
+    file_type: str,
+    stage: str  # 'raw', 'extracted', or 'processed'
+):
+    """Download a processed file"""
+    try:
+        # Validate stage
+        if stage not in ['raw', 'extracted', 'processed']:
+            raise HTTPException(status_code=400, detail="Invalid stage. Must be 'raw', 'extracted', or 'processed'")
+        
+        # Determine file extension based on stage
+        if stage == 'raw':
+            # For raw files, we need to determine the original extension
+            # This is a simplified approach - you might want to store the original extension
+            file_extension = '.xlsx'  # Default, but you might want to make this dynamic
+            filename = f"{file_type}{file_extension}"
+        elif stage == 'extracted':
+            filename = f"{file_type}-extracted.json"
+        else:  # processed
+            filename = f"{file_type}-processed.json"
+        
+        if USE_LOCAL_STORAGE:
+            # Local storage
+            file_path = BASE_DIR / client_slug / stage / period_date / filename
+            if not file_path.exists():
+                raise HTTPException(status_code=404, detail="File not found")
+            
+            return FileResponse(
+                path=str(file_path),
+                filename=filename,
+                media_type='application/octet-stream'
+            )
+        else:
+            # Azure Blob Storage
+            blob_name = get_blob_name(
+                client_slug=client_slug,
+                file_type=filename,
+                period_date=period_date,
+                is_extracted=(stage == 'extracted'),
+                is_processed=(stage == 'processed')
+            )
+            
+            try:
+                content = await download_from_blob_storage(blob_name)
+                
+                # Create a temporary file for download
+                import tempfile
+                import os
+                
+                with tempfile.NamedTemporaryFile(delete=False, suffix=f'-{filename}') as temp_file:
+                    temp_file.write(content)
+                    temp_file_path = temp_file.name
+                
+                # Determine content type
+                content_type = 'application/json' if filename.endswith('.json') else 'application/octet-stream'
+                
+                return FileResponse(
+                    path=temp_file_path,
+                    filename=filename,
+                    media_type=content_type,
+                    background=BackgroundTask(os.unlink, temp_file_path)  # Clean up temp file after download
+                )
+            except Exception as e:
+                logger.error(f"Error downloading from blob storage: {e}")
+                raise HTTPException(status_code=404, detail="File not found in storage")
+                
+    except Exception as e:
+        logger.error(f"Error downloading file: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/clients/{client_slug}/files")
+async def list_client_files(client_slug: str):
+    """List all processed files for a client"""
+    try:
+        files = []
+        
+        if USE_LOCAL_STORAGE:
+            # Local storage
+            client_path = BASE_DIR / client_slug
+            if not client_path.exists():
+                return {"files": []}
+            
+            # Scan through periods and stages
+            for stage in ['raw', 'extracted', 'processed']:
+                stage_path = client_path / stage
+                if stage_path.exists():
+                    for period_dir in stage_path.iterdir():
+                        if period_dir.is_dir():
+                            period_date = period_dir.name
+                            for file_path in period_dir.iterdir():
+                                if file_path.is_file():
+                                    file_info = {
+                                        "client_slug": client_slug,
+                                        "period_date": period_date,
+                                        "stage": stage,
+                                        "filename": file_path.name,
+                                        "file_type": file_path.stem.replace('-extracted', '').replace('-processed', ''),
+                                        "size": file_path.stat().st_size,
+                                        "download_url": f"/api/download/{client_slug}/{period_date}/{file_path.stem.replace('-extracted', '').replace('-processed', '')}/{stage}"
+                                    }
+                                    files.append(file_info)
+        else:
+            # Azure Blob Storage
+            container_client = blob_service_client.get_container_client(AZURE_BLOB_STORAGE_CONTAINER_NAME)
+            blobs = container_client.list_blobs(name_starts_with=f"{client_slug}/")
+            
+            for blob in blobs:
+                # Parse blob name: client_slug/stage/period_date/filename
+                path_parts = blob.name.split('/')
+                if len(path_parts) == 4:
+                    _, stage, period_date, filename = path_parts
+                    file_type = filename.replace('-extracted.json', '').replace('-processed.json', '')
+                    
+                    file_info = {
+                        "client_slug": client_slug,
+                        "period_date": period_date,
+                        "stage": stage,
+                        "filename": filename,
+                        "file_type": file_type,
+                        "size": blob.size,
+                        "download_url": f"/api/download/{client_slug}/{period_date}/{file_type}/{stage}"
+                    }
+                    files.append(file_info)
+        
+        return {"files": files}
+        
+    except Exception as e:
+        logger.error(f"Error listing client files: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
